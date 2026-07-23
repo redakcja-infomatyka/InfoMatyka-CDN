@@ -70,4 +70,5 @@
     }
 
     window.parseMarkdown = parseMarkdown;
+    window.parseMarkdownVersion = '2026.07.23.2';
 }());
