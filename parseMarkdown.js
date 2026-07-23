@@ -8,7 +8,7 @@
         const placeholders = [];
         const token = (html) => {
             const id = placeholders.push(html) - 1;
-            return `%%PARSE-MARKDOWN-${id}%%`;
+            return `%%PARSEMARKDOWN${id}%%`;
         };
 
         result = result.replace(/(?:^|\n)(\|[^\n]+\|\r?\n\|[ :|\-]+\|\r?\n(?:\|[^\n]+\|\r?\n?)+)/g, (match) => {
@@ -64,7 +64,7 @@
         result = result.replace(/\r\n/g, '\n').replace(/\n-\s+/g, '<br>&bull; ').replace(/^-\s*/g, '&bull; ').replace(/\n/g, '<br>');
 
         placeholders.forEach((html, index) => {
-            result = result.split(`%%PARSE-MARKDOWN-${index}%%`).join(html);
+            result = result.split(`%%PARSEMARKDOWN${index}%%`).join(html);
         });
         return result;
     }
