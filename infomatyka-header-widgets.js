@@ -312,7 +312,7 @@
                 .problem-dnia-pytanie{font-style:italic;color:#555;margin-bottom:15px}
                 .problem-dnia-przycisk{display:inline-flex;align-items:center;gap:8px;cursor:pointer;color:#48b8cf;font-weight:700;text-decoration:none!important}
                 .problem-dnia-przycisk:hover{color:#333}
-                .problem-dnia-status{display:flex;align-items:center;gap:8px;color:#15803d;font-weight:700}
+                .problem-dnia-status{display:flex;align-items:center;gap:8px;color:#15803d;font-weight:700;margin-top:12px;padding-top:12px;border-top:1px solid #dcfce7}
             </style>`;
 
             if (cfg.zadanieCollapsible) {
@@ -344,9 +344,10 @@
             if (!window.InfoMatykaSDK) return;
             document.querySelectorAll('.im-daily-task-link').forEach(function(link) {
                 if (window.InfoMatykaSDK.isDailyTaskCompleted()) {
-                link.className = 'problem-dnia-status';
-                link.removeAttribute('href');
-                link.innerHTML = '<i class="fa fa-check-circle"></i><span>Zadanie Wykonane</span>';
+                link.querySelector('span').textContent = 'Zobacz wykonane zadanie';
+                if (!link.nextElementSibling || !link.nextElementSibling.classList.contains('problem-dnia-status')) {
+                    link.insertAdjacentHTML('afterend', '<div class="problem-dnia-status"><i class="fa fa-check-circle"></i><span>Zadanie Wykonane</span></div>');
+                }
                 }
             });
             }, 0);
