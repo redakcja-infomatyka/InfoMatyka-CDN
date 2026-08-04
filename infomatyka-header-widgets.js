@@ -305,11 +305,13 @@
             var dzienRoku = Math.floor((dzisiaj - poczatekRoku) / (1e3 * 60 * 60 * 24));
             var wybraneZadanie = cfg.zadania[dzienRoku % cfg.zadania.length];
             if(!wybraneZadanie) wybraneZadanie = cfg.zadania[0];
+            var polecenieZadania = wybraneZadanie.q || wybraneZadanie.pytanie || 'Otwórz dzisiejsze zadanie';
             
             var taskWidgetStyles = `<style>
                 .problem-dnia-widget{background:#fff;border:1px solid #e9e9e9;padding:20px;margin-bottom:20px;border-radius:8px;}
                 .problem-dnia-header{font-size:16px;font-weight:700;color:#474747;margin:0 0 15px 0;padding-bottom:10px;border-bottom:2px solid #48b8cf;display:flex;align-items:center;gap:8px;}
-                .problem-dnia-pytanie{font-style:italic;color:#555;margin-bottom:15px}
+                .problem-dnia-pytanie{display:block;font-style:italic;color:#555!important;margin-bottom:15px;text-decoration:none!important;line-height:1.55}
+                .problem-dnia-pytanie:hover{color:#0e7490!important;text-decoration:underline!important}
                 .problem-dnia-przycisk{display:inline-flex;align-items:center;gap:8px;cursor:pointer;color:#48b8cf;font-weight:700;text-decoration:none!important}
                 .problem-dnia-przycisk:hover{color:#333}
                 .problem-dnia-status{display:flex;align-items:center;gap:8px;color:#15803d;font-weight:700;margin-top:12px;padding-top:12px;border-top:1px solid #dcfce7}
@@ -327,7 +329,7 @@
                     </div>
                     <div class="collapsible-content">
                         <div style="padding-top: 15px; border-top: 2px solid #48b8cf; margin-top: 10px;">
-                            <div class="problem-dnia-pytanie">${wybraneZadanie.q || wybraneZadanie.pytanie}</div>
+                            <a class="problem-dnia-pytanie" href="/p/zadanie-dnia.html">${polecenieZadania}</a>
                             <a class="problem-dnia-przycisk im-daily-task-link" href="/p/zadanie-dnia.html"><i class="fa fa-arrow-right"></i><span>Rozwiąż zadanie</span></a>
                         </div>
                     </div>
@@ -336,7 +338,7 @@
                 kodDoWyswietlenia += `${taskWidgetStyles}
                 <div class="problem-dnia-widget">
                     <h3 class="problem-dnia-header"><i class="fa fa-puzzle-piece"></i>Zadanie Dnia</h3>
-                    <div class="problem-dnia-pytanie">${wybraneZadanie.q || wybraneZadanie.pytanie}</div>
+                    <a class="problem-dnia-pytanie" href="/p/zadanie-dnia.html">${polecenieZadania}</a>
                     <a class="problem-dnia-przycisk im-daily-task-link" href="/p/zadanie-dnia.html"><i class="fa fa-arrow-right"></i><span>Rozwiąż zadanie</span></a>
                 </div>`;
             }
