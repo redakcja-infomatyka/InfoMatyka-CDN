@@ -1,37 +1,7 @@
 (function() {
     var config = {
     aktywnyWidget: 'random',
-    widgetyDoLosowania: ['zadanieDnia'],
-
-    info: {
-        tytul: "WAŻNA INFORMACJA",
-        tresc: "Już wkrótce opublikujemy pełne omówienie arkusza z egzaminu ósmoklasisty. Bądźcie czujni!",
-        linkPrzycisku: "/p/egzamin-osmoklasisty.html",
-        tekstPrzycisku: "Zobacz Więcej"
-    },
-    zadania: [
-        { pytanie: "Jaka jest kolejna liczba w ciągu: 1, 1, 2, 3, 5, 8...?", odpowiedz: "To ciąg Fibonacciego. Następna liczba to 13 (5 + 8)." },
-        { pytanie: "Ile wynosi suma kątów wewnętrznych w trójkącie?", odpowiedz: "Suma kątów w każdym trójkącie wynosi 180 stopni." },
-        { pytanie: "Co w informatyce oznacza skrót HTML?", odpowiedz: "HyperText Markup Language (Hipertekstowy Język Znaczników)." }
-    ],
-    liczniki: {
-        matura: {
-            tytul: "Do Egzaminu Maturalnego 2026 Zostało:",
-            data: "May 5, 2026 09:00:00",
-            wiadomosc: "Powodzenia Na Maturze!",
-            kolor: "#745DC5"
-        },
-        osmoklasista: {
-            tytul: "Do Egzaminu Ósmoklasisty 2026 Zostało:",
-            data: "May 12, 2026 09:00:00",
-            wiadomosc: "Powodzenia Na Egzaminie!",
-            kolor: "#11800A"
-        }
-    },
-    lekcja: {
-        link: "https://www.twojastrona.pl/p/lekcja-na-zywo.html",
-        tekst: "Lekcja Na Żywo - Kliknij, Aby Dołączyć"
-    }
+    widgetyDoLosowania: ['zadanieDnia']
     };
 
     function renderWidget(cfg) {
@@ -327,6 +297,10 @@
             break;
 
         case 'zadanieDnia':
+            if (!Array.isArray(cfg.zadania) || cfg.zadania.length === 0) {
+                kodDoWyswietlenia = '';
+                break;
+            }
             var dzisiaj = new Date(), poczatekRoku = new Date(dzisiaj.getFullYear(), 0, 0);
             var dzienRoku = Math.floor((dzisiaj - poczatekRoku) / (1e3 * 60 * 60 * 24));
             var wybraneZadanie = cfg.zadania[dzienRoku % cfg.zadania.length];
@@ -353,7 +327,7 @@
                     </div>
                     <div class="collapsible-content">
                         <div style="padding-top: 15px; border-top: 2px solid #48b8cf; margin-top: 10px;">
-                            <div class="problem-dnia-pytanie">${wybraneZadanie.pytanie}</div>
+                            <div class="problem-dnia-pytanie">${wybraneZadanie.q || wybraneZadanie.pytanie}</div>
                             <a class="problem-dnia-przycisk im-daily-task-link" href="/p/zadanie-dnia.html"><i class="fa fa-arrow-right"></i><span>Rozwiąż zadanie</span></a>
                         </div>
                     </div>
@@ -362,7 +336,7 @@
                 kodDoWyswietlenia += `${taskWidgetStyles}
                 <div class="problem-dnia-widget">
                     <h3 class="problem-dnia-header"><i class="fa fa-puzzle-piece"></i>Zadanie Dnia</h3>
-                    <div class="problem-dnia-pytanie">${wybraneZadanie.pytanie}</div>
+                    <div class="problem-dnia-pytanie">${wybraneZadanie.q || wybraneZadanie.pytanie}</div>
                     <a class="problem-dnia-przycisk im-daily-task-link" href="/p/zadanie-dnia.html"><i class="fa fa-arrow-right"></i><span>Rozwiąż zadanie</span></a>
                 </div>`;
             }
@@ -623,9 +597,11 @@
         })
         .catch(err => {
             console.error("Błąd pobierania konfiguracji widgetu:", err);
-            renderWidget(config);
+            var container = document.getElementById('header-widget-content');
+            if (container) container.innerHTML = '';
         });
     } else {
-        renderWidget(config);
+        var container = document.getElementById('header-widget-content');
+        if (container) container.innerHTML = '';
     }
 })();
