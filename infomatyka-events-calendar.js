@@ -1,33 +1,5 @@
 (function() {
-    var eventsList = [
-        {
-        title: "Tydzień Z Tabliczką Mnożenia",
-        description: "Zapraszamy uczniów Szkoły Podstawowej nr 75 im. Powstańców Wielkopolskich do wspólnej zabawy! Czeka na Was aplikacja internetowa oraz wydarzenia offline na korytarzach szkoły.",
-        type: "Wydarzenie Szkolne",
-        location: "Szkoła i Online",
-        url: "https://www.infomatyka.pl/p/aplikacja-tabliczka-mnozenia.html",
-        startDate: "2025-11-21",
-        endDate: "2025-11-28"
-        },
-        {
-        title: "Matematyczny Kalendarz Adwentowy",
-        description: "Dołącz do Mikołaja i Elfów w codziennym odliczaniu do Świąt! Każdego dnia odblokuj nowe zadanie matematyczne ukryte w fabularnej otoczce. Wybierz swój poziom i pomóż w logistyce Bieguna Północnego, rozwiązując zagadki logiczne i rachunkowe.",
-        type: "Wyzwanie Online",
-        location: "Platforma InfoMatyka",
-        url: "https://www.infomatyka.pl/2025/12/wydarzenie-matematyczny-kalendarz-adwentowy.html",
-        startDate: "2025-12-01",
-        endDate: "2025-12-24"
-        },
-        {
-        title: "Informatyczny Kalendarz Adwentowy",
-        description: "Sprawdź swoją wiedzę o świecie komputerów! Codzienne zagadki dotyczące sprzętu, historii informatyki, systemów liczbowych (binarny, szesnastkowy) oraz cyberbezpieczeństwa. Idealne dla tych, którzy chcą zrozumieć, jak działają technologie, nie pisząc jeszcze kodu.",
-        type: "Wyzwanie Online",
-        location: "Platforma InfoMatyka",
-        url: "https://www.infomatyka.pl/2025/12/wydarzenie-informatyczny-kalendarz-adwentowy.html",
-        startDate: "2025-12-01",
-        endDate: "2025-12-24"
-        }
-    ];
+    var eventsList = [];
 
     function initCalendar() {
         const container = document.getElementById('event-section-container');
