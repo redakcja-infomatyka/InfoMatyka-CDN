@@ -4,7 +4,7 @@
     widgetyDoLosowania: ['zadanieDnia']
     };
 
-    function renderWidget(cfg) {
+    function renderWidget(cfg, selectedWidget) {
     var now = new Date();
 
     window.toggleWidgetCollapse = function(el) {
@@ -109,9 +109,15 @@
     }
 
     var aktywny = cfg.aktywnyWidget;
+    var carouselWidgets = [];
     if (aktywny === 'random' && allowedWidgets.length > 0) {
-        var losowyIndeks = Math.floor(Math.random() * allowedWidgets.length);
-        aktywny = allowedWidgets[losowyIndeks];
+        carouselWidgets = allowedWidgets.slice();
+        if (selectedWidget && carouselWidgets.indexOf(selectedWidget) !== -1) {
+            aktywny = selectedWidget;
+        } else {
+            var losowyIndeks = Math.floor(Math.random() * allowedWidgets.length);
+            aktywny = allowedWidgets[losowyIndeks];
+        }
     }
 
     var wspolnyStyl = `<style>
@@ -397,7 +403,7 @@
                 </div>`;
             }
 
-            kodDoWyswietlenia += `<script>var countDownDate_${licznikConfig.id}=new Date("${licznikConfig.data}").getTime(),x_${licznikConfig.id}=setInterval(function(){var e=(new Date).getTime(),t=countDownDate_${licznikConfig.id}-e,o=Math.floor(t/864e5),n=Math.floor(t%864e5/36e5),d=Math.floor(t%36e5/6e4),i=Math.floor(t%6e4/1e3);var elD=document.getElementById("days-${licznikConfig.id}"),elH=document.getElementById("hours-${licznikConfig.id}"),elM=document.getElementById("minutes-${licznikConfig.id}"),elS=document.getElementById("seconds-${licznikConfig.id}"); if(elD) elD.innerHTML=o; if(elH) elH.innerHTML=n; if(elM) elM.innerHTML=d; if(elS) elS.innerHTML=i;if(t<0){clearInterval(x_${licznikConfig.id});if(document.getElementById("countdown-timer-${licznikConfig.id}")) document.getElementById("countdown-timer-${licznikConfig.id}").style.display="none";if(document.getElementById("countdown-end-message-${licznikConfig.id}")) document.getElementById("countdown-end-message-${licznikConfig.id}").style.display="block"}},1e3);<\/script>`;
+            kodDoWyswietlenia += `<script>var countDownDate_${licznikConfig.id}=new Date("${licznikConfig.data}").getTime();if(window.countdownInterval_${licznikConfig.id})clearInterval(window.countdownInterval_${licznikConfig.id});window.countdownInterval_${licznikConfig.id}=setInterval(function(){var e=(new Date).getTime(),t=countDownDate_${licznikConfig.id}-e,o=Math.floor(t/864e5),n=Math.floor(t%864e5/36e5),d=Math.floor(t%36e5/6e4),i=Math.floor(t%6e4/1e3);var elD=document.getElementById("days-${licznikConfig.id}"),elH=document.getElementById("hours-${licznikConfig.id}"),elM=document.getElementById("minutes-${licznikConfig.id}"),elS=document.getElementById("seconds-${licznikConfig.id}"); if(elD) elD.innerHTML=o; if(elH) elH.innerHTML=n; if(elM) elM.innerHTML=d; if(elS) elS.innerHTML=i;if(t<0){clearInterval(window.countdownInterval_${licznikConfig.id});if(document.getElementById("countdown-timer-${licznikConfig.id}")) document.getElementById("countdown-timer-${licznikConfig.id}").style.display="none";if(document.getElementById("countdown-end-message-${licznikConfig.id}")) document.getElementById("countdown-end-message-${licznikConfig.id}").style.display="block"}},1e3);<\/script>`;
             break;
 
         case 'lekcjaNaZywo':
@@ -570,12 +576,56 @@
     }
 
     var container = document.getElementById('header-widget-content');
-    if(container) {
-        container.innerHTML = kodDoWyswietlenia;
+    if (container) {
+        var carousel = container.querySelector('.header-widget-carousel');
 
-        var scripts = container.getElementsByTagName("script");
-        for(var i=0; i<scripts.length; i++) {
-            eval(scripts[i].innerText);
+        if (carouselWidgets.length > 1 || carousel) {
+            if (!carousel) {
+                container.innerHTML = `<style>
+                    .header-widget-carousel{position:relative;width:100%;max-width:480px;margin-left:auto}
+                    .header-widget-carousel-controls{position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:space-between;pointer-events:none}
+                    .header-widget-carousel-button{width:36px;height:36px;border:1px solid rgba(8,145,178,.18);border-radius:9999px;background:rgba(255,255,255,.94);color:#0891b2;box-shadow:0 3px 10px rgba(15,23,42,.18);display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transform:scale(.92);transition:opacity .18s ease,transform .18s ease,background-color .18s ease}
+                    .header-widget-carousel-button:hover{background:#fff;transform:scale(1.06)}
+                    .header-widget-carousel:hover .header-widget-carousel-button,.header-widget-carousel:focus-within .header-widget-carousel-button{opacity:1;pointer-events:auto;transform:scale(1)}
+                    .header-widget-carousel-button:focus-visible{opacity:1;pointer-events:auto;outline:3px solid #67e8f9;outline-offset:2px;transform:scale(1)}
+                    @media (hover:none){.header-widget-carousel-button{opacity:.9;pointer-events:auto;transform:none}}
+                    @media (prefers-reduced-motion:reduce){.header-widget-carousel-button{transition:none}}
+                </style>
+                <div class="header-widget-carousel" data-widget-index="0">
+                    <div class="header-widget-carousel-slide" aria-live="polite"></div>
+                    <div class="header-widget-carousel-controls" aria-label="Nawigacja widżetów">
+                        <button class="header-widget-carousel-button" type="button" data-widget-direction="-1" aria-label="Poprzedni widżet" title="Poprzedni widżet"><i class="fa fa-chevron-left" aria-hidden="true"></i></button>
+                        <button class="header-widget-carousel-button" type="button" data-widget-direction="1" aria-label="Następny widżet" title="Następny widżet"><i class="fa fa-chevron-right" aria-hidden="true"></i></button>
+                    </div>
+                </div>`;
+
+                carousel = container.querySelector('.header-widget-carousel');
+                carousel.querySelectorAll('[data-widget-direction]').forEach(function(button) {
+                    button.addEventListener('click', function() {
+                        var currentIndex = Number(carousel.dataset.widgetIndex) || 0;
+                        var direction = Number(button.dataset.widgetDirection);
+                        var nextIndex = (currentIndex + direction + carouselWidgets.length) % carouselWidgets.length;
+                        renderWidget(cfg, carouselWidgets[nextIndex]);
+                    });
+                });
+            }
+
+            var activeIndex = carouselWidgets.indexOf(aktywny);
+            if (activeIndex !== -1) carousel.dataset.widgetIndex = String(activeIndex);
+
+            var slide = carousel.querySelector('.header-widget-carousel-slide');
+            slide.innerHTML = kodDoWyswietlenia;
+            var scripts = slide.getElementsByTagName("script");
+            for (var i = 0; i < scripts.length; i++) {
+                eval(scripts[i].innerText);
+            }
+        } else {
+            container.innerHTML = kodDoWyswietlenia;
+
+            var scripts = container.getElementsByTagName("script");
+            for (var i = 0; i < scripts.length; i++) {
+                eval(scripts[i].innerText);
+            }
         }
     }
     }
