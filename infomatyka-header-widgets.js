@@ -582,13 +582,15 @@
         if (carouselWidgets.length > 1 || carousel) {
             if (!carousel) {
                 container.innerHTML = `<style>
-                    .header-widget-carousel{position:relative;width:100%;max-width:480px;margin-left:auto}
-                    .header-widget-carousel-controls{position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:space-between;pointer-events:none}
-                    .header-widget-carousel-button{width:36px;height:36px;border:1px solid rgba(8,145,178,.18);border-radius:9999px;background:rgba(255,255,255,.94);color:#0891b2;box-shadow:0 3px 10px rgba(15,23,42,.18);display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transform:scale(.92);transition:opacity .18s ease,transform .18s ease,background-color .18s ease}
-                    .header-widget-carousel-button:hover{background:#fff;transform:scale(1.06)}
-                    .header-widget-carousel:hover .header-widget-carousel-button,.header-widget-carousel:focus-within .header-widget-carousel-button{opacity:1;pointer-events:auto;transform:scale(1)}
-                    .header-widget-carousel-button:focus-visible{opacity:1;pointer-events:auto;outline:3px solid #67e8f9;outline-offset:2px;transform:scale(1)}
-                    @media (hover:none){.header-widget-carousel-button{opacity:.9;pointer-events:auto;transform:none}}
+                    .header-widget-carousel{position:relative;width:100%;max-width:480px;margin-left:auto;transform:translateX(-44px)}
+                    .header-widget-carousel-controls{position:absolute;inset:0;z-index:20;pointer-events:none}
+                    .header-widget-carousel-button{position:absolute;top:50%;width:36px;height:36px;border:1px solid rgba(8,145,178,.18);border-radius:9999px;background:rgba(255,255,255,.94);color:#0891b2;box-shadow:0 3px 10px rgba(15,23,42,.18);display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:auto;transform:translateY(-50%);transition:opacity .18s ease,background-color .18s ease}
+                    .header-widget-carousel-button[data-widget-direction="-1"]{left:-44px}
+                    .header-widget-carousel-button[data-widget-direction="1"]{right:-44px}
+                    .header-widget-carousel-button:hover,.header-widget-carousel-button:focus-visible{opacity:1;background:#fff}
+                    .header-widget-carousel-button:focus-visible{outline:3px solid #67e8f9;outline-offset:2px}
+                    @media (max-width:767px){.header-widget-carousel{width:calc(100% - 88px);margin-left:44px;transform:none}}
+                    @media (hover:none){.header-widget-carousel-button{opacity:1}}
                     @media (prefers-reduced-motion:reduce){.header-widget-carousel-button{transition:none}}
                 </style>
                 <div class="header-widget-carousel" data-widget-index="0">
