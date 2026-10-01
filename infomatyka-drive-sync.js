@@ -1,5 +1,6 @@
 /* InfoMatyka: private, browser-only Google Drive synchronization (schema 1).
- * No secrets or OAuth tokens are persisted. Each device writes its own head.
+ * OAuth access survives navigation in tab-scoped sessionStorage until Google expiry.
+ * Each device writes its own head; no client secrets or refresh tokens are used.
  * Vector clocks detect simultaneous changes; conflicts require a user decision.
  */
 (function (root) {
@@ -278,8 +279,11 @@
       // A decision applies only to the versions the user actually reviewed.
       if (resolution && (resolution.signature !== signature || resolution.localHash !== localHash)) action = 'conflict';
       if (resolution && resolution.signature === signature && resolution.localHash === localHash) {
-        if (resolution.source === 'local') action = 'push';
-        else { chosen = cloud.find(r => r.fileId === resolution.source); action = chosen ? 'resolve' : 'conflict'; }
+        if (resolution.source === 'local') action = resolution.downloadOnly ? 'conflict' : 'push';
+        else {
+          chosen = cloud.find(r => r.fileId === resolution.source);
+          action = chosen ? (resolution.downloadOnly && review.action === 'pull' ? 'pull' : resolution.downloadOnly ? 'conflict' : 'resolve') : 'conflict';
+        }
       }
       if (action === 'conflict') return { ...review, action };
       if (action === 'none') return { category, action };
@@ -316,15 +320,32 @@
     module.exports = { CATEGORIES, SyncEngine, BoardStore, DriveTransport, MAX_BYTES, MAX_FILES, byteSize, stable, digest, dominates, mergeClocks, heads, decide, validateRecord }; return;
   }
 
+  const SESSION_KEY = 'infomatyka_drive_session_v1';
+  const GROUPS = [
+    { label: 'Konto i postępy', detail: 'Profil, dostępność, XP, odznaki, nauka i ulubione', categories: ['profile', 'progress', 'learning', 'favorites'] },
+    { label: 'Generator', detail: 'Zestawy, zadania i zapisane materiały', categories: ['generator'] },
+    { label: 'Klasy i kalendarz', detail: 'Uczniowie, lekcje, oceny i raporty', categories: ['teacher'] },
+    { label: 'Tablice interaktywne', detail: 'Tablice, obrazy, foldery i powiązania', categories: ['boards'] }
+  ];
   let token = null, account = null, ready = false, busy = false, authorizing = false, client = null, gisPromise = null;
-  let engine, backupStore, pending = [], comparisons = [], recovery = [], panel, notice = '', applied = false;
-  let prefs = { selected: [], automatic: false, boundAccount: '', lastSync: '' };
-  try { prefs = { ...prefs, ...JSON.parse(root.localStorage.getItem(SETTINGS_KEY) || '{}') }; } catch (_) { }
-  prefs.selected = Array.isArray(prefs.selected) ? prefs.selected.filter(k => has(CATEGORIES, k)) : [];
+  let engine, backupStore, comparisons = [], recovery = [], panel, notice = '', applied = false, afterAuth = null;
+  let cloudChoices = Object.create(null);
+  let prefs = { selected: Object.keys(CATEGORIES), selectionVersion: 2, fetchLatest: false, automatic: false, boundAccount: '', accountEmail: '', lastSync: '' };
+  try {
+    const stored = JSON.parse(root.localStorage.getItem(SETTINGS_KEY) || '{}');
+    prefs = { ...prefs, ...stored, automatic: false };
+    if (stored.selectionVersion !== 2) prefs.selected = Object.keys(CATEGORIES);
+    prefs.selectionVersion = 2;
+  } catch (_) { }
+  prefs.selected = Array.isArray(prefs.selected) ? prefs.selected.filter(k => has(CATEGORIES, k)) : Object.keys(CATEGORIES);
   const config = root.InfoMatykaDriveConfig || {};
   const configured = typeof config.clientId === 'string' && /^[\w-]+\.apps\.googleusercontent\.com$/.test(config.clientId);
   const connected = () => !!token && Date.now() < token.expiresAt && !!account;
   function savePrefs() { root.localStorage.setItem(SETTINGS_KEY, JSON.stringify(prefs)); }
+  function clearSession() { try { root.sessionStorage.removeItem(SESSION_KEY); } catch (_) { } }
+  function saveSession() {
+    try { root.sessionStorage.setItem(SESSION_KEY, JSON.stringify({ token, clientId: config.clientId, accountId: account.permissionId })); } catch (_) { }
+  }
   function text(tag, value, className) { const el = document.createElement(tag); el.textContent = value; if (className) el.className = className; return el; }
   function loadGIS() {
     if (root.google && root.google.accounts && root.google.accounts.oauth2) return Promise.resolve();
@@ -338,77 +359,150 @@
     }).catch(e => { gisPromise = null; throw e; });
     return gisPromise;
   }
-  const transport = new DriveTransport(root.fetch.bind(root), () => token, () => { token = null; });
-  function disconnect() { token = null; account = null; pending = []; comparisons = []; recovery = []; notice = 'Odłączono na tym urządzeniu. Dane na Drive pozostają zachowane.'; render(); }
+  const transport = new DriveTransport(root.fetch.bind(root), () => token, () => { token = null; clearSession(); });
+  function disconnect() {
+    token = null; account = null; engine = null; comparisons = []; recovery = []; afterAuth = null;
+    prefs.automatic = false; savePrefs(); clearSession();
+    notice = 'Odłączono na tym urządzeniu. Dane na Drive pozostają zachowane.'; render();
+  }
+  function initializeAccount(user) {
+    account = user; comparisons = []; recovery = []; cloudChoices = Object.create(null);
+    prefs.boundAccount = user.permissionId; prefs.accountEmail = user.emailAddress || ''; savePrefs(); saveSession();
+    const device = root.localStorage.getItem(DEVICE_KEY) || root.crypto.randomUUID();
+    root.localStorage.setItem(DEVICE_KEY, device);
+    backupStore = root.localforage.createInstance({ name: 'infomatyka_drive_recovery', storeName: 'copies' });
+    engine = new SyncEngine({ storage: root.localStorage, tasks: root.localforage, backups: backupStore,
+      boards: new BoardStore(root.indexedDB, () => {
+        root.dispatchEvent(new Event('infomatyka-boards-changed'));
+        if (root.BroadcastChannel) { const channel = new root.BroadcastChannel('infomatyka_tablice_interaktywne'); channel.postMessage('changed'); channel.close(); }
+      }), crypto: root.crypto, transport, device, account: user.permissionId,
+      onApplied: () => { applied = true; root.dispatchEvent(new Event('infomatyka_progress_updated')); root.dispatchEvent(new Event('infomatyka_drive_applied')); }
+    });
+  }
+  async function identifyAccount() {
+    const about = await transport.request('drive/v3/about?fields=user(permissionId,emailAddress,displayName)');
+    if (!about.user || !about.user.permissionId) throw new Error('Nie udało się ustalić właściciela Dysku.');
+    return about.user;
+  }
   async function receiveToken(response) {
+    const continuation = afterAuth; afterAuth = null;
     try {
       if (response.error || !response.access_token || !root.google.accounts.oauth2.hasGrantedAllScopes(response, SCOPE)) throw new Error('Nie przyznano dostępu do danych aplikacji na Drive.');
-      token = { accessToken: response.access_token, expiresAt: Date.now() + Number(response.expires_in || 0) * 1000 - 30000 };
-      const about = await transport.request('drive/v3/about?fields=user(permissionId,emailAddress,displayName)');
-      if (!about.user || !about.user.permissionId) throw new Error('Nie udało się ustalić właściciela Dysku.');
-      const user = about.user;
+      const lifetime = Number(response.expires_in);
+      if (!Number.isFinite(lifetime) || lifetime <= 30) throw new Error('Google nie przyznało ważnego czasu połączenia. Spróbuj ponownie.');
+      token = { accessToken: response.access_token, expiresAt: Date.now() + lifetime * 1000 - 30000 };
+      const user = await identifyAccount();
       if (prefs.boundAccount && prefs.boundAccount !== user.permissionId) {
-        if (!root.confirm('Wybrano inne konto Google: ' + (user.emailAddress || user.displayName) + '. Dane w tej przeglądarce mogą należeć do poprzedniego użytkownika. Po kontynuacji będzie można synchronizować je z nowym kontem. Kontynuować?')) { disconnect(); return; }
-        prefs.automatic = false;
+        if (!root.confirm('Wybrano inne konto Google: ' + (user.emailAddress || user.displayName) + '. Dane lokalne mogą należeć do poprzedniego konta. Kontynuować?')) { disconnect(); return; }
+        prefs.fetchLatest = false;
       }
-      account = user; pending = []; comparisons = []; prefs.automatic = false; prefs.boundAccount = user.permissionId; savePrefs();
-      const device = root.localStorage.getItem(DEVICE_KEY) || root.crypto.randomUUID();
-      root.localStorage.setItem(DEVICE_KEY, device);
-      backupStore = root.localforage.createInstance({ name: 'infomatyka_drive_recovery', storeName: 'copies' });
-      engine = new SyncEngine({ storage: root.localStorage, tasks: root.localforage, backups: backupStore,
-        boards: new BoardStore(root.indexedDB, () => {
-          root.dispatchEvent(new Event('infomatyka-boards-changed'));
-          if (root.BroadcastChannel) { const channel = new root.BroadcastChannel('infomatyka_tablice_interaktywne'); channel.postMessage('changed'); channel.close(); }
-        }),
-        crypto: root.crypto, transport, device, account: user.permissionId,
-        onApplied: () => { applied = true; root.dispatchEvent(new Event('infomatyka_progress_updated')); root.dispatchEvent(new Event('infomatyka_drive_applied')); } });
-      notice = 'Połączono. Wybierz kategorie, porównaj wersje i zdecyduj, którą zachować. Samo porównanie nie nadpisuje danych.'; render();
-    } catch (e) { token = null; account = null; notice = e.message; }
+      initializeAccount(user);
+      notice = 'Połączono. Wybierz zakres i kliknij „Synchronizuj”.';
+    } catch (e) { token = null; account = null; engine = null; clearSession(); notice = e.message; }
     finally { authorizing = false; render(); }
-    if (connected() && prefs.selected.length) await synchronize();
+    if (connected() && prefs.selected.length && (continuation || prefs.fetchLatest)) await synchronize(null, !continuation && prefs.fetchLatest);
   }
   async function prepare() {
     if (!configured) { render(); return; }
     try {
       if (!root.isSecureContext || !root.crypto.subtle) throw new Error('Synchronizacja wymaga HTTPS lub localhost.');
-      if (!root.navigator.locks) throw new Error('Ta przeglądarka nie obsługuje bezpiecznej synchronizacji wielu kart (Web Locks). Użyj aktualnej przeglądarki.');
-      if (!root.localforage) throw new Error('Nie załadowano localForage. Odśwież stronę.');
+      if (!root.navigator.locks) throw new Error('Ta przeglądarka nie obsługuje bezpiecznej synchronizacji wielu kart. Użyj aktualnej przeglądarki.');
+      if (!root.localforage) throw new Error('Nie załadowano pamięci danych. Odśwież stronę.');
       await loadGIS();
       client = root.google.accounts.oauth2.initTokenClient({ client_id: config.clientId, scope: SCOPE,
         include_granted_scopes: false, callback: receiveToken,
-        error_callback: () => { authorizing = false; notice = 'Okno Google zostało zamknięte lub zablokowane. Kliknij „Połącz” ponownie.'; render(); } });
-      ready = true; render();
+        error_callback: () => { authorizing = false; afterAuth = null; notice = 'Okno Google zostało zamknięte lub zablokowane. Kliknij przycisk połączenia ponownie.'; render(); }
+      });
+      ready = true;
+      let saved; try { saved = JSON.parse(root.sessionStorage.getItem(SESSION_KEY)); } catch (_) { }
+      if (saved && saved.clientId === config.clientId && object(saved.token) && typeof saved.token.accessToken === 'string' &&
+          Number.isFinite(saved.token.expiresAt) && saved.token.expiresAt > Date.now() && saved.accountId === prefs.boundAccount) {
+        authorizing = true; notice = 'Przywracanie połączenia z Google Drive…'; render(); token = saved.token;
+        try {
+          const user = await identifyAccount();
+          if (user.permissionId !== saved.accountId) throw new Error('Konto Google zmieniło się. Połącz ponownie.');
+          initializeAccount(user); notice = 'Połączenie zachowane. Kliknij „Synchronizuj”, aby sprawdzić dane.';
+        } catch (e) { token = null; account = null; engine = null; clearSession(); notice = e.message; }
+        finally { authorizing = false; }
+      } else clearSession();
+      render();
+      if (connected() && prefs.fetchLatest && prefs.selected.length) await synchronize(null, true);
     } catch (e) { notice = e.message; render(); }
   }
-  async function synchronize(resolution, automatic = false) {
-    if (busy || !connected() || !engine || !prefs.selected.length) return;
-    busy = true; notice = !automatic && !resolution ? 'Odczytywanie wersji lokalnych i Google Drive…' : 'Synchronizowanie wybranych kategorii…'; render();
-    const selected = resolution ? [resolution.category] : [...prefs.selected];
+  function beginConnect(changeAccount = false, continuation = null) {
+    if (!ready || busy || authorizing) return;
+    token = null; account = null; engine = null; clearSession(); comparisons = []; recovery = []; cloudChoices = Object.create(null);
+    afterAuth = continuation; authorizing = true; notice = 'Łączenie z Google Drive…'; render();
+    try {
+      client.requestAccessToken({ prompt: changeAccount || !prefs.accountEmail ? 'select_account' : '',
+        ...(changeAccount || !prefs.accountEmail ? {} : { login_hint: prefs.accountEmail }) });
+    } catch (e) { authorizing = false; afterAuth = null; notice = e.message; render(); }
+  }
+  const differs = review => !review.error && !['same', 'none'].includes(review.action);
+  function chosenCloud(review) {
+    if (!review.cloud.length) return null;
+    const hashes = new Set(review.cloud.map(record => record.hash));
+    if (hashes.size === 1) return review.cloud[0];
+    return review.cloud.find(record => record.fileId === cloudChoices[review.category]) || null;
+  }
+  async function inspectAll(selected) {
+    // Independent categories are read together; changing a checkbox never calls this.
+    const results = await Promise.allSettled(selected.map(category => engine.inspect(category)));
+    return results.map((result, index) => result.status === 'fulfilled' ? result.value : { category: selected[index], error: result.reason.message });
+  }
+  async function synchronize(source = null, fetchLatest = false) {
+    if (busy || authorizing || !prefs.selected.length) return;
+    if (!connected() || !engine) { beginConnect(false, { synchronize: true }); return; }
+    const selected = [...prefs.selected];
+    const reviewed = comparisons.filter(review => selected.includes(review.category));
+    busy = true; notice = source ? 'Synchronizowanie wybranych danych…' : 'Porównywanie danych lokalnych i Google Drive…'; render();
     try {
       await root.navigator.locks.request('infomatyka-drive-sync-v1', async () => {
-        // Preferences and checkpoints may have changed while waiting for another tab.
         const latest = JSON.parse(root.localStorage.getItem(SETTINGS_KEY) || '{}');
-        if (latest.boundAccount !== account.permissionId) throw new Error('Konto Drive zmieniło się w innej karcie. Połącz ponownie.');
-        if (automatic && !latest.automatic) return;
-        if (!resolution) { pending = []; comparisons = []; }
-        const errors = [];
-        for (const category of selected.filter(k => (latest.selected || []).includes(k))) {
-          try {
-            const result = !automatic && !resolution ? await engine.inspect(category) : await engine.sync(category, resolution);
-            const comparison = !automatic && !resolution || result.action === 'conflict' ? result : await engine.inspect(category);
-            comparisons = [...comparisons.filter(p => p.category !== category), comparison];
-            pending = pending.filter(p => p.category !== category);
-            if (comparison.action !== 'same' && comparison.action !== 'none') pending.push(comparison);
-          } catch (error) {
-            comparisons = [...comparisons.filter(p => p.category !== category), { category, error: error.message }];
-            pending = pending.filter(p => p.category !== category); errors.push(CATEGORIES[category].label + ': ' + error.message);
+        if (latest.boundAccount !== account.permissionId || stable(latest.selected) !== stable(selected)) throw new Error('Konto lub zakres zmieniły się w innej karcie. Kliknij „Synchronizuj” ponownie.');
+        const fresh = await inspectAll(selected);
+        if (source) {
+          // Validate the complete comparison before any category is changed.
+          if (fresh.some(review => review.error) || fresh.some(review => {
+            const previous = reviewed.find(item => item.category === review.category);
+            return !previous || previous.localHash !== review.localHash || previous.signature !== review.signature;
+          })) {
+            comparisons = fresh; cloudChoices = Object.create(null);
+            notice = 'Dane zmieniły się od czasu porównania. Sprawdź aktualne różnice i wybierz ponownie.'; return;
           }
+          const changes = fresh.filter(differs).filter(review => source === 'local' || review.cloud.length);
+          if (source === 'cloud' && changes.some(review => !chosenCloud(review))) {
+            comparisons = fresh; notice = 'Wybierz wersję Drive w kategoriach z równoległymi zmianami.'; return;
+          }
+          const results = await Promise.allSettled(changes.map(review => engine.sync(review.category, {
+            signature: review.signature, localHash: review.localHash,
+            source: source === 'local' ? 'local' : chosenCloud(review).fileId
+          })));
+          const failures = results.flatMap((result, index) => result.status === 'rejected' ? [CATEGORIES[changes[index].category].label + ': ' + result.reason.message] : []);
+          const stale = results.some(result => result.status === 'fulfilled' && result.value.action === 'conflict');
+          comparisons = failures.length || stale ? await inspectAll(selected) : [];
+          cloudChoices = Object.create(null);
+          notice = failures.length ? 'Nie udało się zakończyć wszystkich zmian. ' + failures.join(' ') : stale ?
+            'Część danych zmieniła się podczas synchronizacji. Sprawdź nowe porównanie.' :
+            source === 'local' ? 'Zapisano wybrane dane lokalne na Google Drive.' : 'Wczytano dostępne dane z Google Drive. Kategorie bez kopii na Drive pozostają bez zmian.';
+        } else {
+          comparisons = fresh; cloudChoices = Object.create(null);
+          if (fetchLatest) {
+            // Only an unmodified local state or an empty first-time device may be replaced automatically.
+            // Never upload here; local edits/deletions and concurrent cloud heads require a decision.
+            const safe = fresh.filter(review => !review.error && review.action === 'pull');
+            const results = await Promise.allSettled(safe.map(review => engine.sync(review.category, {
+              signature: review.signature, localHash: review.localHash, source: review.cloud[0].fileId, downloadOnly: true
+            })));
+            const completed = safe.filter((_, index) => results[index].status === 'fulfilled' && results[index].value.action === 'pull');
+            comparisons = completed.length ? await inspectAll(selected) : fresh;
+            results.forEach((result, index) => { if (result.status === 'rejected') comparisons = comparisons.map(review => review.category === safe[index].category ? { ...review, error: result.reason.message } : review); });
+            notice = completed.length ? 'Pobrano najnowsze dane z Drive. ' : '';
+          } else notice = '';
+          notice += comparisons.some(review => review.error) ? 'Nie udało się porównać wszystkich danych. Szczegóły poniżej.' : comparisons.some(differs) ?
+            'Dane różnią się. Wybierz zapis wersji lokalnej albo wczytanie wersji z Drive.' : 'Dane są zgodne; nie trzeba niczego nadpisywać.';
         }
-        // Preserve settings changed by another tab during the network calls.
-        prefs = { ...prefs, ...JSON.parse(root.localStorage.getItem(SETTINGS_KEY) || '{}'), lastSync: new Date().toISOString() };
-        if (errors.length || pending.length) prefs.automatic = false;
-        savePrefs();
-        notice = errors.length ? errors.join(' ') : pending.length ? 'Porównaj daty i rozmiary. Wybierz wersję osobno dla każdej kategorii; wybór może nadpisać drugą wersję.' : 'Wybrane dane są zgodne. Nie trzeba niczego nadpisywać.';
+        prefs = { ...prefs, ...JSON.parse(root.localStorage.getItem(SETTINGS_KEY) || '{}'), lastSync: new Date().toISOString() }; savePrefs();
       });
     } catch (e) { notice = e.message; }
     finally { busy = false; render(); }
@@ -426,128 +520,130 @@
   async function showRecovery() {
     try {
       recovery = [];
-      for (const category of Object.keys(CATEGORIES)) {
-        const copies = await backupStore.getItem(account.permissionId + ':' + category) || [];
-        recovery.push(...copies);
-      }
+      for (const category of Object.keys(CATEGORIES)) recovery.push(...(await backupStore.getItem(account.permissionId + ':' + category) || []));
       notice = recovery.length ? 'Wybierz kopię do przywrócenia na tym urządzeniu.' : 'Nie ma jeszcze kopii sprzed synchronizacji dla tego konta.';
     } catch (e) { notice = e.message; }
     render();
   }
   async function restoreCopy(copy) {
-    if (!connected() || busy || !root.confirm('Przywrócić lokalnie całą kategorię „' + CATEGORIES[copy.category].label + '” z ' + copy.at + '? Automatyczna synchronizacja zostanie wyłączona.')) return;
-    busy = true; prefs.automatic = false; savePrefs(); render();
+    if (!connected() || busy || !root.confirm('Przywrócić lokalnie dane „' + CATEGORIES[copy.category].label + '” z ' + formatDate(copy.at) + '?')) return;
+    busy = true; render();
     try {
       await root.navigator.locks.request('infomatyka-drive-sync-v1', async () => {
-        const current = await engine.capture(copy.category);
-        await engine.apply(copy.category, copy.data, current);
+        await engine.apply(copy.category, copy.data, await engine.capture(copy.category));
       });
-      recovery = []; pending = []; comparisons = []; notice = 'Przywrócono kopię lokalną. Odśwież widok. Drive zmieni się dopiero po kolejnej synchronizacji.';
+      recovery = []; comparisons = []; cloudChoices = Object.create(null); notice = 'Przywrócono kopię lokalną. Drive zmieni się dopiero po wybraniu zapisu na Drive.';
     } catch (e) { notice = e.message; }
     finally { busy = false; render(); }
   }
-  function beginConnect() {
-    // Disable data transfer until Google has identified the newly selected account.
-    token = null; account = null; engine = null; pending = []; comparisons = []; recovery = []; authorizing = true;
-    notice = 'Wybierz konto w oknie Google.'; render();
-    client.requestAccessToken({ prompt: 'select_account' });
-  }
-  function button(label, action, disabled = false) {
-    const b = text('button', label, 'im-drive-button'); b.type = 'button'; b.disabled = disabled || busy || authorizing; b.addEventListener('click', action); return b;
+  function button(label, action, disabled = false, className = '') {
+    const b = text('button', label, 'im-drive-button ' + className); b.type = 'button'; b.disabled = disabled || busy || authorizing; b.addEventListener('click', action); return b;
   }
   function formatBytes(bytes) {
     return bytes < 1024 ? bytes + ' B' : (bytes / (bytes < 1024 * 1024 ? 1024 : 1024 * 1024)).toLocaleString('pl-PL', { maximumFractionDigits: 2 }) + (bytes < 1024 * 1024 ? ' KiB' : ' MiB');
   }
   function formatDate(value) { return value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString('pl-PL') : 'Data zapisu nieznana'; }
-  function canAutomate() { return prefs.selected.length && prefs.selected.every(category => comparisons.some(p => p.category === category && ['same', 'none'].includes(p.action))); }
-  function renderComparison(comparison) {
-    const box = text('section', '', 'im-drive-comparison');
-    box.append(text('h4', CATEGORIES[comparison.category].label));
-    if (comparison.error) { box.append(text('p', comparison.error, 'im-drive-status')); return box; }
-    const { localVersion, cloud } = comparison;
-    box.append(text('p', 'Pliki urządzeń w tej kategorii: ' + comparison.fileCount + ' / 100. Limit zapisu: 8 MiB na kategorię.', 'im-drive-help'));
+  function latestDate(values) { return values.filter(value => Number.isFinite(Date.parse(value))).sort((a, b) => Date.parse(b) - Date.parse(a))[0]; }
+  function confirmDirection(source) {
+    const label = source === 'local' ? 'Zapisać wybrane dane lokalne na Google Drive? Zastąpią wersję Drive w tym zakresie.' :
+      'Wczytać wybrane dane z Google Drive? Zastąpią dane lokalne w tym zakresie. Kategorie bez kopii Drive pozostaną bez zmian.';
+    if (root.confirm(label + '\nPrzed zmianą zachowamy lokalne kopie.')) synchronize(source);
+  }
+  function renderComparison() {
+    const box = text('section', '', 'im-drive-comparison'); box.append(text('h4', 'Porównanie wybranych danych'));
+    const valid = comparisons.filter(review => !review.error);
+    const different = valid.filter(differs), remote = valid.flatMap(review => chosenCloud(review) || review.cloud[0] || []);
+    const localBytes = valid.reduce((sum, review) => sum + review.localVersion.bytes, 0);
+    const cloudBytes = remote.reduce((sum, record) => sum + record.bytes, 0);
     const versions = text('div', '', 'im-drive-versions');
-    const resolve = source => {
-      const message = source === 'local' ? 'Wersja lokalna zastąpi bieżącą wersję tej kategorii na Google Drive. Inne urządzenia będą mogły ją pobrać.' : 'Wybrana wersja Google Drive zastąpi wszystkie lokalne dane tej kategorii. Zostanie też wskazana jako wersja do synchronizacji na innych urządzeniach.';
-      if (root.confirm(message + '\n\nKategoria: ' + CATEGORIES[comparison.category].label + '. Przed zmianą zachowamy lokalne kopie. Kontynuować?')) synchronize({ ...comparison, source });
-    };
-    const localCard = text('div', '', 'im-drive-version'); localCard.append(text('h5', 'Wersja lokalna · to urządzenie'));
-    localCard.append(text('p', localVersion.empty ? 'Brak zapisanych danych.' : (localVersion.savedAt ? 'Ostatni zapis tablicy: ' + formatDate(localVersion.savedAt) : 'Data wcześniejszego zapisu nie jest dostępna.')),
-      text('p', 'Ten stan wykryto: ' + formatDate(localVersion.observedAt)), text('p', 'Rozmiar danych: ' + formatBytes(localVersion.bytes)));
-    localCard.append(text('p', 'Rozmiar zapisu na Drive: ' + formatBytes(localVersion.uploadBytes) + ' / 8 MiB', 'im-drive-help'));
-    if (localVersion.uploadBytes > MAX_BYTES) localCard.append(text('p', 'Lokalny zapis przekracza limit 8 MiB. Zmniejsz dane lub załączniki; możesz też wybrać mniejszą kopię Drive.', 'im-drive-status'));
-    if (!['same', 'none'].includes(comparison.action)) localCard.append(button('Użyj lokalnej → zapisz na Drive', () => resolve('local'), localVersion.uploadBytes > MAX_BYTES));
-    versions.append(localCard);
-    if (!cloud.length) { const card = text('div', '', 'im-drive-version'); card.append(text('h5', 'Wersja Google Drive'), text('p', 'Brak kopii w chmurze.'), text('p', 'Rozmiar: 0 B')); versions.append(card); }
-    cloud.forEach(record => {
-      const card = text('div', '', 'im-drive-version');
-      card.append(text('h5', 'Wersja Google Drive'), text('p', 'Zapis na Drive: ' + formatDate(record.savedAt)),
-        text('p', 'Rozmiar danych: ' + formatBytes(record.bytes) + ' · plik: ' + formatBytes(record.fileBytes)),
-        text('p', 'Urządzenie: ' + record.device.slice(0, 8), 'im-drive-help'));
-      if (!['same', 'none'].includes(comparison.action)) card.append(button('Użyj Drive → pobierz na urządzenie', () => resolve(record.fileId)));
-      versions.append(card);
+    const localCard = text('div', '', 'im-drive-version'); localCard.append(text('h5', 'Na tym urządzeniu'),
+      text('p', valid.every(review => review.localVersion.empty) ? 'Brak zapisanych danych.' : 'Dane lokalne: ' + formatBytes(localBytes)),
+      text('p', 'Stan wykryto: ' + formatDate(latestDate(valid.map(review => review.localVersion.observedAt)))));
+    const localSaved = latestDate(valid.map(review => review.localVersion.savedAt));
+    if (localSaved) localCard.append(text('p', 'Ostatni zapis tablicy: ' + formatDate(localSaved)));
+    const cloudCard = text('div', '', 'im-drive-version'); cloudCard.append(text('h5', 'Na Google Drive'),
+      text('p', remote.length ? 'Dane w chmurze: ' + formatBytes(cloudBytes) : 'Brak kopii w chmurze.'),
+      text('p', remote.length ? 'Ostatni zapis: ' + formatDate(latestDate(remote.map(record => record.savedAt))) : 'Rozmiar: 0 B'));
+    versions.append(localCard, cloudCard); box.append(versions);
+    box.append(text('p', different.length ? 'Różnią się: ' + different.map(review => CATEGORIES[review.category].label).join(' · ') : 'Wersje są zgodne; nadpisanie nie jest potrzebne.', 'im-drive-help'));
+    const detail = text('details', '', 'im-drive-details'); detail.append(text('summary', 'Szczegóły różnic i dat'));
+    comparisons.forEach(review => {
+      if (review.error) { detail.append(text('p', CATEGORIES[review.category].label + ': ' + review.error, 'im-drive-status')); return; }
+      const record = chosenCloud(review) || review.cloud[0];
+      const row = text('div', '', 'im-drive-diff-row'); row.append(text('strong', CATEGORIES[review.category].label),
+        text('span', 'Lokalnie: ' + formatBytes(review.localVersion.bytes) + ' · ' + (review.localVersion.savedAt ? formatDate(review.localVersion.savedAt) : 'data zapisu nieznana; stan wykryto ' + formatDate(review.localVersion.observedAt))),
+        text('span', record ? 'Drive: ' + formatBytes(record.bytes) + ' · ' + formatDate(record.savedAt) : 'Drive: brak kopii'),
+        text('span', ['same', 'none'].includes(review.action) ? 'Zgodne' : !review.cloud.length ? 'Tylko lokalnie' : review.localVersion.empty ? 'Tylko na Drive' : 'Różna zawartość'));
+      detail.append(row);
+    }); box.append(detail);
+    valid.filter(review => new Set(review.cloud.map(record => record.hash)).size > 1).forEach(review => {
+      const label = text('label', 'Równoległe wersje: ' + CATEGORIES[review.category].label, 'im-drive-cloud-choice');
+      const select = document.createElement('select'); select.disabled = busy;
+      const initial = text('option', 'Wybierz kopię Drive'); initial.value = ''; select.append(initial);
+      review.cloud.forEach(record => { const option = text('option', formatDate(record.savedAt) + ' · ' + formatBytes(record.bytes) + ' · urządzenie ' + record.device.slice(0, 8)); option.value = record.fileId; select.append(option); });
+      select.value = cloudChoices[review.category] || ''; select.addEventListener('change', () => { cloudChoices[review.category] = select.value; render(); }); label.append(select); box.append(label);
     });
-    box.append(versions, text('p', ['same', 'none'].includes(comparison.action) ? 'Wersje są zgodne; nadpisanie nie jest potrzebne.' :
-      'Wybór dotyczy całej kategorii i może nadpisać drugą wersję. Dane nie są automatycznie łączone. Przed zmianą zachowamy kopie lokalne.', 'im-drive-help'));
+    const hasErrors = comparisons.some(review => review.error), needsCloud = different.filter(review => review.cloud.length);
+    if (different.some(review => review.localVersion.uploadBytes > MAX_BYTES)) box.append(text('p', 'Część danych przekracza limit zapisu. Szczegóły są w sekcji „Limity i kopie zapasowe”. Możesz wczytać mniejszą wersję z Drive.', 'im-drive-status'));
+    if (different.length) {
+      const actions = text('div', '', 'im-drive-actions');
+      actions.append(button('Zapisz dane lokalne na Drive', () => confirmDirection('local'), hasErrors || different.some(review => review.localVersion.uploadBytes > MAX_BYTES)),
+        button('Wczytaj dane z Drive', () => confirmDirection('cloud'), hasErrors || !needsCloud.length || needsCloud.some(review => !chosenCloud(review))));
+      box.append(actions, text('p', 'Wybór obejmuje zaznaczony zakres. Druga wersja może zostać nadpisana; wcześniej zachowamy kopię lokalną.', 'im-drive-help'));
+    }
     return box;
   }
   function render() {
     if (!panel) return;
-    panel.replaceChildren();
-    panel.append(text('h3', 'Synchronizacja z Google Drive'));
-    panel.append(text('p', 'InfoMatyka może zapisywać i synchronizować wybrane dane w prywatnym folderze danych aplikacji na Twoim Google Drive. Odczytuje i zapisuje wyłącznie własne dane aplikacji; nie ma dostępu do Twoich zwykłych dokumentów. Kopie zajmują miejsce na Twoim koncie Google.'));
-    panel.append(text('p', 'Możesz przenosić profil, postępy, ulubione, generator, klasy i kalendarz oraz tablice interaktywne z obrazami, folderami i powiązaniami z lekcjami. Najpierw zaloguj się do Google Drive, potem wybierz, co synchronizować.'));
-    panel.append(text('p', 'Limity modułu: 8 MiB na zapis kategorii (łącznie z załącznikami i opisem zapisu), 100 plików urządzeń w kategorii i 5 lokalnych kopii przed zmianami na kategorię i konto. Drive przechowuje bieżące wersje urządzeń, bez nieograniczonej historii. Są to limity InfoMatyki, nie Google Drive. Kopie lokalne wymagają miejsca na urządzeniu.', 'im-drive-help'));
-    panel.append(text('p', configured ? (connected() ? 'Połączono: ' + (account.emailAddress || account.displayName) : 'Połączenie wymaga kliknięcia przycisku. Dane lokalne są dostępne także offline.') : 'Połączenie nie jest jeszcze skonfigurowane przez administratora strony (brak Google OAuth Client ID).', 'im-drive-status'));
-    const login = text('div', '', 'im-drive-actions');
-    login.append(button(connected() ? 'Zaloguj ponownie / zmień konto Google' : 'Zaloguj się do Google Drive', beginConnect, !ready)); panel.append(login);
-    if (!connected()) {
-      const status = text('p', notice, 'im-drive-status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); panel.append(status);
-      return;
-    }
-    const choices = document.createElement('fieldset'); choices.disabled = busy || authorizing;
-    choices.append(text('legend', 'Co chcesz synchronizować na tym urządzeniu?'));
-    Object.entries(CATEGORIES).forEach(([key, spec]) => {
-      const label = text('label', '', 'im-drive-choice'); const check = document.createElement('input'); check.type = 'checkbox'; check.checked = prefs.selected.includes(key);
-      check.addEventListener('change', () => {
-        prefs.selected = check.checked ? [...prefs.selected, key] : prefs.selected.filter(k => k !== key);
-        prefs.automatic = false; pending = pending.filter(p => prefs.selected.includes(p.category)); comparisons = comparisons.filter(p => prefs.selected.includes(p.category)); savePrefs(); render();
-        if (prefs.selected.length) synchronize();
-      });
-      label.append(check, text('span', spec.label)); choices.append(label);
-    });
-    panel.append(choices);
-    panel.append(text('p', 'Odznaczenie zatrzymuje synchronizację kategorii na tym urządzeniu; nie usuwa kopii z Drive. Aby przenieść lekcje razem z tablicami, wybierz zarówno klasy i kalendarz, jak i tablice. Hasła i aktywne sesje logowania nie są synchronizowane.', 'im-drive-help'));
-    const auto = text('label', '', 'im-drive-choice'); const autoCheck = document.createElement('input'); autoCheck.type = 'checkbox'; autoCheck.checked = !!prefs.automatic; autoCheck.disabled = busy || !canAutomate();
-    autoCheck.addEventListener('change', () => { prefs.automatic = autoCheck.checked; savePrefs(); });
-    auto.append(autoCheck, text('span', 'Synchronizuj automatycznie co 60 sekund, gdy te ustawienia są otwarte i połączenie jest aktywne.')); panel.append(auto);
-    if (!canAutomate()) panel.append(text('p', 'Automatyczną synchronizację możesz włączyć po porównaniu i uzgodnieniu wersji wybranych kategorii.', 'im-drive-help'));
-    panel.append(text('p', 'Po odświeżeniu, przejściu na inną podstronę lub wygaśnięciu zgody połącz Drive ponownie. Synchronizacja nie działa przy zamkniętej stronie.', 'im-drive-help'));
-    const actions = text('div', '', 'im-drive-actions');
-    actions.append(button('Porównaj wersje lokalne i Drive', () => synchronize(), !prefs.selected.length), button('Odłącz na tym urządzeniu', disconnect),
-      button('Pokaż kopie do przywrócenia', showRecovery, !connected()), button('Pobierz kopie lokalne', downloadRecovery, !root.localforage));
-    panel.append(actions);
-    if (applied) panel.append(button('Odśwież widok po pobraniu danych', () => root.location.reload()));
-    if (prefs.lastSync) panel.append(text('p', 'Ostatnie zakończone sprawdzenie: ' + formatDate(prefs.lastSync), 'im-drive-help'));
+    panel.replaceChildren(); panel.append(text('h3', 'Synchronizacja z Google Drive'));
+    panel.append(text('p', 'Zapisuj dane InfoMatyki na swoim Google Drive i przenoś je między urządzeniami. Aplikacja ma dostęp tylko do swojego prywatnego folderu, bez dostępu do Twoich dokumentów.'));
+    const top = text('div', '', 'im-drive-toolbar');
+    top.append(text('span', connected() ? 'Połączono: ' + (account.emailAddress || account.displayName) : prefs.accountEmail ? 'Konto: ' + prefs.accountEmail + ' · połączenie do odnowienia' : 'Najpierw zaloguj się do Google Drive.', 'im-drive-status'));
+    top.append(button(connected() ? 'Zmień konto' : prefs.accountEmail ? 'Połącz ponownie' : 'Zaloguj się do Google Drive', () => beginConnect(connected()), !ready, 'im-drive-secondary'));
+    if (connected()) top.append(button('Odłącz', disconnect, false, 'im-drive-secondary')); panel.append(top);
+    const fetchLabel = text('label', '', 'im-drive-choice im-drive-fetch'); const fetchCheck = document.createElement('input'); fetchCheck.type = 'checkbox'; fetchCheck.checked = !!prefs.fetchLatest; fetchCheck.disabled = busy || authorizing;
+    fetchCheck.addEventListener('change', () => { prefs.fetchLatest = fetchCheck.checked; savePrefs(); });
+    fetchLabel.append(fetchCheck, text('span', 'Pobieraj zawsze najnowsze dane')); panel.append(fetchLabel);
+    panel.append(text('p', 'Po połączeniu pobierz dane, jeśli urządzenie jest puste lub jego kopia nie była zmieniana. Przy własnych zmianach pokaż wybór: wczytać czy wysłać.', 'im-drive-help'));
+    if (connected()) {
+      const choices = document.createElement('fieldset'); choices.disabled = busy || authorizing; choices.className = 'im-drive-scope';
+      choices.append(text('legend', 'Co synchronizować?'));
+      const grid = text('div', '', 'im-drive-choice-grid');
+      GROUPS.forEach(group => {
+        const label = text('label', '', 'im-drive-choice im-drive-group'); const check = document.createElement('input'); check.type = 'checkbox';
+        check.checked = group.categories.every(key => prefs.selected.includes(key)); check.indeterminate = !check.checked && group.categories.some(key => prefs.selected.includes(key));
+        check.addEventListener('change', () => {
+          prefs.selected = check.checked ? Object.keys(CATEGORIES).filter(key => prefs.selected.includes(key) || group.categories.includes(key)) : prefs.selected.filter(key => !group.categories.includes(key));
+          comparisons = []; recovery = []; cloudChoices = Object.create(null); savePrefs(); notice = 'Zakres zmieniony. Kliknij „Synchronizuj”, aby porównać dane.'; render();
+        });
+        const caption = text('span', ''); caption.append(text('strong', group.label), text('small', group.detail)); label.append(check, caption); grid.append(label);
+      }); choices.append(grid); panel.append(choices);
+      panel.append(text('p', 'Wszystko jest domyślnie zaznaczone. Zmiana zaznaczeń nie uruchamia synchronizacji.', 'im-drive-help'));
+      panel.append(button(busy ? 'Synchronizowanie…' : 'Synchronizuj', () => synchronize(), !prefs.selected.length));
+      panel.append(text('p', 'Połączenie jest zachowane w tej karcie po odświeżeniu i powrocie do ustawień. Ważne do: ' + formatDate(new Date(token.expiresAt).toISOString()), 'im-drive-help'));
+    } else if (!configured) panel.append(text('p', 'Administrator nie skonfigurował jeszcze połączenia Google Drive.', 'im-drive-help'));
     const status = text('p', notice, 'im-drive-status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); panel.append(status);
-    if (recovery.length) {
-      const copies = text('div', '', 'im-drive-conflict'); copies.append(text('h4', 'Lokalne kopie przed zmianami'));
-      recovery.forEach(copy => copies.append(button('Przywróć: ' + CATEGORIES[copy.category].label + ' · ' + formatDate(copy.at) + ' · ' + formatBytes(byteSize(copy.data)), () => restoreCopy(copy))));
-      panel.append(copies);
-    }
-    comparisons.filter(p => prefs.selected.includes(p.category)).forEach(comparison => panel.append(renderComparison(comparison)));
+    if (comparisons.length && connected()) panel.append(renderComparison());
+    if (applied) panel.append(button('Odśwież widok po wczytaniu danych', () => root.location.reload()));
+    const advanced = text('details', '', 'im-drive-details'); advanced.append(text('summary', 'Limity i kopie zapasowe'));
+    advanced.append(text('p', 'Limity InfoMatyki: 8 MiB na zapis kategorii razem z obrazami i opisem, 100 plików urządzeń w kategorii oraz 5 lokalnych kopii na kategorię i konto. To limity aplikacji. Drive przechowuje bieżące wersje urządzeń, a kopie zajmują miejsce na koncie Google i na urządzeniu.', 'im-drive-help'));
+    comparisons.filter(review => !review.error).forEach(review => advanced.append(text('p', CATEGORIES[review.category].label + ': pliki ' + review.fileCount + '/100 · zapis lokalny ' + formatBytes(review.localVersion.uploadBytes) + '/8 MiB', 'im-drive-help')));
+    const recoveryActions = text('div', '', 'im-drive-actions'); recoveryActions.append(button('Pokaż kopie do przywrócenia', showRecovery, !connected(), 'im-drive-secondary'), button('Pobierz kopie lokalne', downloadRecovery, !root.localforage, 'im-drive-secondary')); advanced.append(recoveryActions);
+    recovery.forEach(copy => advanced.append(button('Przywróć: ' + CATEGORIES[copy.category].label + ' · ' + formatDate(copy.at) + ' · ' + formatBytes(byteSize(copy.data)), () => restoreCopy(copy), false, 'im-drive-secondary')));
+    panel.append(advanced); if (recovery.length) advanced.open = true;
   }
-  root.InfoMatykaDrive = { categories: CATEGORIES, synchronize, disconnect, mount: async function (element) {
-    panel = element; render(); await prepare();
-  } };
+  root.InfoMatykaDrive = { categories: CATEGORIES, synchronize, disconnect, mount: async function (element) { panel = element; render(); await prepare(); } };
   root.addEventListener('storage', event => {
     if (event.key === SETTINGS_KEY || event.key === null) {
-      try { const latest = JSON.parse(root.localStorage.getItem(SETTINGS_KEY)); if (!latest || (account && latest.boundAccount !== account.permissionId)) disconnect(); prefs = latest || { selected: [], automatic: false, boundAccount: '' }; render(); } catch (_) { disconnect(); }
+      try {
+        const latest = JSON.parse(root.localStorage.getItem(SETTINGS_KEY));
+        if (!latest || (account && latest.boundAccount !== account.permissionId)) { disconnect(); return; }
+        prefs = { ...prefs, ...latest }; comparisons = []; recovery = []; cloudChoices = Object.create(null); render();
+      } catch (_) { disconnect(); }
     }
   });
   setInterval(() => {
-    if (panel && prefs.automatic && canAutomate() && document.visibilityState === 'visible' && connected() && !pending.length) synchronize(null, true);
-    else if (panel && token && !connected()) { token = null; notice = 'Połączenie wygasło. Połącz Drive ponownie, aby wznowić synchronizację.'; render(); }
+    if (panel && token && !connected()) { token = null; account = null; engine = null; comparisons = []; clearSession(); notice = 'Dostęp Google wygasł. Kliknij „Połącz ponownie”, aby odnowić połączenie z zapamiętanym kontem.'; render(); }
   }, 60000);
   function mountSettings() { const target = document.getElementById('infomatyka-drive-settings'); if (target) root.InfoMatykaDrive.mount(target); }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mountSettings); else mountSettings();
