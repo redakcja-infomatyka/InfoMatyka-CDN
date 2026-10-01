@@ -216,9 +216,14 @@
       await this.backups.setItem(key, [copy, ...copies].slice(0, 5));
     }
     async apply(category, incoming, before) {
+      if (this.beforeApply) await this.beforeApply(category);
       // Fail closed if a durable rollback copy cannot be stored (e.g. quota full).
       await this.backup(category, before);
       if (await this.hash(await this.capture(category)) !== await this.hash(before)) throw new Error('Dane zmieniły się podczas pobierania. Spróbuj ponownie.');
+      if (this.beforeApply) await this.beforeApply(category);
+      if (this.onApplyStart) this.onApplyStart(category);
+      let applied = false;
+      try {
       const spec = CATEGORIES[category];
       const writeLocal = data => spec.keys.forEach(k => {
         const v = data.local[k]; if (v === null) this.storage.removeItem(k); else this.storage.setItem(k, v);
@@ -241,7 +246,9 @@
         } catch (_) { throw new Error('Pamięć urządzenia jest pełna. Kopia sprzed zmiany pozostaje w „Pobierz kopie lokalne”.'); }
         throw error;
       }
+      applied = true;
       if (this.onApplied) this.onApplied(category);
+      } finally { if (this.onApplyEnd) this.onApplyEnd(category, applied); }
     }
     async inspect(category) {
       const local = await this.capture(category), localHash = await this.hash(local);
@@ -321,6 +328,16 @@
   }
 
   const SESSION_KEY = 'infomatyka_drive_session_v1';
+  const BACKGROUND_KEY = 'infomatyka_drive_background_v1';
+  const EDIT_PREFIX = 'infomatyka_drive_edit_v1_';
+  const HYDRATION_PREFIX = 'infomatyka_drive_hydration_v1_';
+  const tabId = root.crypto.randomUUID ? root.crypto.randomUUID() : 'tab-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+  const keyCategory = new Map(Object.entries(CATEGORIES).flatMap(([category, spec]) => spec.keys.map(key => [key, category])));
+  const internalWrites = new Set(), loadedEpochs = Object.create(null), previousEpochs = Object.create(null);
+  Object.keys(CATEGORIES).forEach(category => { loadedEpochs[category] = root.localStorage.getItem(HYDRATION_PREFIX + category); });
+  let backgroundRunning = false, backgroundTimer = null, pageEdited = false, needsReload = false, refreshTimer = null;
+  let previousInert = false, applyingInBackground = false, backgroundState = null, preparePromise = null;
+  let sessionRequest = null, connectionChannel = null;
   const GROUPS = [
     { label: 'Konto i postępy', detail: 'Profil, dostępność, XP, odznaki, nauka i ulubione', categories: ['profile', 'progress', 'learning', 'favorites'] },
     { label: 'Generator', detail: 'Zestawy, zadania i zapisane materiały', categories: ['generator'] },
@@ -330,7 +347,7 @@
   let token = null, account = null, ready = false, busy = false, authorizing = false, client = null, gisPromise = null;
   let engine, backupStore, comparisons = [], recovery = [], panel, notice = '', applied = false, afterAuth = null;
   let cloudChoices = Object.create(null);
-  let prefs = { selected: Object.keys(CATEGORIES), selectionVersion: 2, fetchLatest: false, automatic: false, boundAccount: '', accountEmail: '', lastSync: '' };
+  let prefs = { selected: Object.keys(CATEGORIES), selectionVersion: 2, fetchLatest: false, background: true, connectionActive: true, automatic: false, boundAccount: '', accountEmail: '', lastSync: '' };
   try {
     const stored = JSON.parse(root.localStorage.getItem(SETTINGS_KEY) || '{}');
     prefs = { ...prefs, ...stored, automatic: false };
@@ -360,14 +377,18 @@
     return gisPromise;
   }
   const transport = new DriveTransport(root.fetch.bind(root), () => token, () => { token = null; clearSession(); });
-  function disconnect() {
+  function disconnect(persist = true) {
     token = null; account = null; engine = null; comparisons = []; recovery = []; afterAuth = null;
-    prefs.automatic = false; savePrefs(); clearSession();
+    prefs.automatic = false; prefs.connectionActive = false; if (persist) savePrefs(); clearSession();
+    clearTimeout(backgroundTimer); backgroundState = null; needsReload = false;
+    Object.keys(CATEGORIES).forEach(category => { loadedEpochs[category] = root.localStorage.getItem(HYDRATION_PREFIX + category); });
     notice = 'Odłączono na tym urządzeniu. Dane na Drive pozostają zachowane.'; render();
   }
   function initializeAccount(user) {
+    try { const latest = JSON.parse(root.localStorage.getItem(SETTINGS_KEY)); if (latest && (!latest.boundAccount || latest.boundAccount === user.permissionId)) prefs = { ...prefs, ...latest }; } catch (_) { }
     account = user; comparisons = []; recovery = []; cloudChoices = Object.create(null);
-    prefs.boundAccount = user.permissionId; prefs.accountEmail = user.emailAddress || ''; savePrefs(); saveSession();
+    try { const saved = JSON.parse(root.localStorage.getItem(BACKGROUND_KEY)); backgroundState = saved && saved.account === user.permissionId ? saved : null; } catch (_) { backgroundState = null; }
+    prefs.boundAccount = user.permissionId; prefs.accountEmail = user.emailAddress || ''; prefs.connectionActive = true; savePrefs(); saveSession();
     const device = root.localStorage.getItem(DEVICE_KEY) || root.crypto.randomUUID();
     root.localStorage.setItem(DEVICE_KEY, device);
     backupStore = root.localforage.createInstance({ name: 'infomatyka_drive_recovery', storeName: 'copies' });
@@ -376,8 +397,39 @@
         root.dispatchEvent(new Event('infomatyka-boards-changed'));
         if (root.BroadcastChannel) { const channel = new root.BroadcastChannel('infomatyka_tablice_interaktywne'); channel.postMessage('changed'); channel.close(); }
       }), crypto: root.crypto, transport, device, account: user.permissionId,
-      onApplied: () => { applied = true; root.dispatchEvent(new Event('infomatyka_progress_updated')); root.dispatchEvent(new Event('infomatyka_drive_applied')); }
+      beforeApply: () => {
+        if (!prefs.connectionActive || !connected() || account.permissionId !== user.permissionId) {
+          const error = new Error('Połączenie zostało zakończone. Dane lokalne pozostają zachowane.'); error.code = 'DRIVE_DISCONNECTED'; throw error;
+        }
+        if (backgroundRunning && (pageEdited || otherPageEditing())) {
+          const error = new Error('Nowsze dane z Drive czekają na zakończenie edycji i odświeżenie widoku.'); error.code = 'DRIVE_EDITING'; throw error;
+        }
+      },
+      onApplyStart: category => {
+        internalWrites.add(category); previousEpochs[category] = root.localStorage.getItem(HYDRATION_PREFIX + category);
+        const epoch = JSON.stringify({ tab: tabId, at: Date.now(), account: user.permissionId, done: false });
+        loadedEpochs[category] = epoch; root.localStorage.setItem(HYDRATION_PREFIX + category, epoch);
+        if (backgroundRunning && !panel && root.document.body && !applyingInBackground) {
+          previousInert = root.document.body.inert; root.document.body.inert = true; applyingInBackground = true;
+        }
+      },
+      onApplyEnd: (category, succeeded) => {
+        if (!succeeded) {
+          const epoch = previousEpochs[category];
+          if (epoch === null) root.localStorage.removeItem(HYDRATION_PREFIX + category); else root.localStorage.setItem(HYDRATION_PREFIX + category, epoch);
+          loadedEpochs[category] = epoch;
+        } else {
+          const epoch = JSON.stringify({ tab: tabId, at: Date.now(), account: user.permissionId, done: true });
+          loadedEpochs[category] = epoch; root.localStorage.setItem(HYDRATION_PREFIX + category, epoch);
+        }
+        internalWrites.delete(category);
+      },
+      onApplied: category => {
+        applied = true; if (backgroundRunning && !panel) needsReload = true;
+        root.dispatchEvent(new Event('infomatyka_progress_updated')); root.dispatchEvent(new CustomEvent('infomatyka_drive_applied', { detail: { category } }));
+      }
     });
+    if (pageEdited) renewEditLease();
   }
   async function identifyAccount() {
     const about = await transport.request('drive/v3/about?fields=user(permissionId,emailAddress,displayName)');
@@ -401,22 +453,26 @@
     } catch (e) { token = null; account = null; engine = null; clearSession(); notice = e.message; }
     finally { authorizing = false; render(); }
     if (connected() && prefs.selected.length && (continuation || prefs.fetchLatest)) await synchronize(null, !continuation && prefs.fetchLatest);
+    if (connected() && prefs.background) scheduleBackground(2000);
   }
-  async function prepare() {
+  async function prepareRuntime() {
     if (!configured) { render(); return; }
     try {
       if (!root.isSecureContext || !root.crypto.subtle) throw new Error('Synchronizacja wymaga HTTPS lub localhost.');
       if (!root.navigator.locks) throw new Error('Ta przeglądarka nie obsługuje bezpiecznej synchronizacji wielu kart. Użyj aktualnej przeglądarki.');
       if (!root.localforage) throw new Error('Nie załadowano pamięci danych. Odśwież stronę.');
+      if (panel) {
       await loadGIS();
       client = root.google.accounts.oauth2.initTokenClient({ client_id: config.clientId, scope: SCOPE,
         include_granted_scopes: false, callback: receiveToken,
         error_callback: () => { authorizing = false; afterAuth = null; notice = 'Okno Google zostało zamknięte lub zablokowane. Kliknij przycisk połączenia ponownie.'; render(); }
       });
       ready = true;
+      }
       let saved; try { saved = JSON.parse(root.sessionStorage.getItem(SESSION_KEY)); } catch (_) { }
+      if ((!saved || !saved.token || saved.token.expiresAt <= Date.now()) && prefs.connectionActive && prefs.boundAccount) saved = await requestPeerSession();
       if (saved && saved.clientId === config.clientId && object(saved.token) && typeof saved.token.accessToken === 'string' &&
-          Number.isFinite(saved.token.expiresAt) && saved.token.expiresAt > Date.now() && saved.accountId === prefs.boundAccount) {
+          Number.isFinite(saved.token.expiresAt) && saved.token.expiresAt > Date.now() && saved.accountId === prefs.boundAccount && prefs.connectionActive) {
         authorizing = true; notice = 'Przywracanie połączenia z Google Drive…'; render(); token = saved.token;
         try {
           const user = await identifyAccount();
@@ -426,8 +482,181 @@
         finally { authorizing = false; }
       } else clearSession();
       render();
-      if (connected() && prefs.fetchLatest && prefs.selected.length) await synchronize(null, true);
+      if (panel && connected() && prefs.fetchLatest && prefs.selected.length) await synchronize(null, true);
+      if (connected() && prefs.background) scheduleBackground(2000);
     } catch (e) { notice = e.message; render(); }
+  }
+  function prepare() { if (!preparePromise) preparePromise = prepareRuntime(); return preparePromise; }
+  function requestPeerSession() {
+    if (!connectionChannel) return Promise.resolve(null);
+    return new Promise(resolve => {
+      const nonce = tabId + '-' + Math.random().toString(36).slice(2);
+      const timer = setTimeout(() => { sessionRequest = null; resolve(null); }, 500);
+      sessionRequest = { nonce, accept: value => { clearTimeout(timer); sessionRequest = null; resolve(value); } };
+      connectionChannel.postMessage({ type: 'session-request', nonce, accountId: prefs.boundAccount, clientId: config.clientId });
+    });
+  }
+  function renewEditLease() {
+    if (!pageEdited || !prefs.connectionActive || !prefs.boundAccount) return;
+    try { root.localStorage.setItem(EDIT_PREFIX + tabId, JSON.stringify({ account: prefs.boundAccount, expiresAt: Date.now() + 120000 })); } catch (_) { }
+  }
+  function otherPageEditing() {
+    for (let i = 0; i < root.localStorage.length; i++) {
+      const key = root.localStorage.key(i);
+      if (!key.startsWith(EDIT_PREFIX) || key === EDIT_PREFIX + tabId) continue;
+      try { const lease = JSON.parse(root.localStorage.getItem(key)); if (lease.account === prefs.boundAccount && lease.expiresAt > Date.now()) return true; } catch (_) { }
+    }
+    return false;
+  }
+  function markEditing(event) {
+    const target = event.target;
+    if (!target || !target.closest || target.closest('#infomatyka-drive-settings, #infomatyka-drive-background-status')) return;
+    if (event.type === 'pointerdown' && !target.closest('button, canvas, [contenteditable="true"], input, textarea, select')) return;
+    pageEdited = true; renewEditLease();
+  }
+  function checkEpoch(category) {
+    return root.localStorage.getItem(HYDRATION_PREFIX + category) === loadedEpochs[category];
+  }
+  function guardWrite(category) {
+    if (!category || internalWrites.has(category) || !prefs.connectionActive || checkEpoch(category)) return;
+    needsReload = true; renderBackgroundStatus();
+    const error = new Error('Dane zostały wczytane z Google Drive w innej karcie. Odśwież tę stronę przed dalszym zapisem.'); error.code = 'DRIVE_RELOAD_REQUIRED'; throw error;
+  }
+  function localChanged(category) {
+    if (!category || internalWrites.has(category)) return;
+    if (connectionChannel) connectionChannel.postMessage({ type: 'local-change', accountId: prefs.boundAccount });
+    if (prefs.background) scheduleBackground(2500);
+  }
+  function installObservers() {
+    const proto = root.Storage && root.Storage.prototype;
+    if (proto) {
+      const set = proto.setItem, remove = proto.removeItem, clear = proto.clear;
+      proto.setItem = function (key, value) {
+        const category = this === root.localStorage ? keyCategory.get(String(key)) : null;
+        const changed = category && this.getItem(key) !== String(value);
+        if (changed) guardWrite(category);
+        const result = set.call(this, key, value); if (changed) localChanged(category); return result;
+      };
+      proto.removeItem = function (key) {
+        const category = this === root.localStorage ? keyCategory.get(String(key)) : null, changed = category && this.getItem(key) !== null;
+        if (changed) guardWrite(category);
+        const result = remove.call(this, key); if (changed) localChanged(category); return result;
+      };
+      proto.clear = function () {
+        if (this === root.localStorage) Object.keys(CATEGORIES).forEach(guardWrite);
+        const result = clear.call(this); if (this === root.localStorage) localChanged('profile'); return result;
+      };
+    }
+    if (root.localforage) ['setItem', 'removeItem'].forEach(method => {
+      const original = root.localforage[method]; if (typeof original !== 'function') return;
+      root.localforage[method] = function (key, ...args) {
+        const tracked = key === 'generator_baza_zadan' && !internalWrites.has('generator');
+        if (tracked) guardWrite('generator');
+        const result = original.call(this, key, ...args);
+        if (tracked && result && result.then) result.then(() => localChanged('generator'), () => {});
+        return result;
+      };
+    });
+    ['beforeinput', 'change', 'pointerdown'].forEach(event => document.addEventListener(event, markEditing, true));
+    root.addEventListener('infomatyka-boards-changed', () => localChanged('boards'));
+    root.addEventListener('infomatyka_progress_updated', () => localChanged('progress'));
+    root.addEventListener('offline', render);
+    root.addEventListener('online', () => { if (backgroundState) backgroundState.retryAt = 0; render(); scheduleBackground(1000); });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') { renewEditLease(); if (needsReload && !pageEdited) scheduleRefresh(); else scheduleBackground(1000); }
+    });
+    root.addEventListener('pagehide', () => {
+      clearTimeout(backgroundTimer); clearTimeout(refreshTimer);
+      try { root.localStorage.removeItem(EDIT_PREFIX + tabId); } catch (_) { }
+    });
+    try {
+      if (root.BroadcastChannel) {
+        connectionChannel = new root.BroadcastChannel('infomatyka_drive_runtime_v1');
+        connectionChannel.onmessage = event => {
+          const message = event.data;
+          if (!object(message)) return;
+          if (message.type === 'session-request' && connected() && prefs.connectionActive && message.accountId === account.permissionId && message.clientId === config.clientId) {
+            connectionChannel.postMessage({ type: 'session-response', nonce: message.nonce, token, accountId: account.permissionId, clientId: config.clientId });
+          } else if (message.type === 'session-response' && sessionRequest && message.nonce === sessionRequest.nonce && message.accountId === prefs.boundAccount && message.clientId === config.clientId) {
+            sessionRequest.accept(message);
+          } else if (message.type === 'local-change' && message.accountId === prefs.boundAccount) scheduleBackground(2500);
+        };
+        const boardsChannel = new root.BroadcastChannel('infomatyka_tablice_interaktywne'); boardsChannel.onmessage = () => localChanged('boards');
+      }
+    } catch (_) { }
+  }
+  function scheduleBackground(delay = 2500) {
+    if (!prefs.background || prefs.scopePending || prefs.reviewPending || !prefs.connectionActive || !connected() || !engine || needsReload) return;
+    clearTimeout(backgroundTimer); backgroundTimer = setTimeout(() => { backgroundTimer = null; syncInBackground(); }, delay);
+  }
+  function scheduleRefresh() {
+    if (panel || pageEdited || !needsReload || document.visibilityState !== 'visible') return;
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(() => {
+      const inProgress = Object.keys(CATEGORIES).some(category => {
+        try { const epoch = JSON.parse(root.localStorage.getItem(HYDRATION_PREFIX + category)); return epoch && !epoch.done && Date.now() - epoch.at < 30000; } catch (_) { return false; }
+      });
+      if (inProgress || busy) { scheduleRefresh(); return; }
+      if (!pageEdited && needsReload) root.location.reload();
+    }, 250);
+  }
+  async function syncInBackground() {
+    if (busy || authorizing || !prefs.background || prefs.scopePending || prefs.reviewPending || !prefs.connectionActive || !connected() || !engine || needsReload || !prefs.selected.length || document.visibilityState !== 'visible' || root.navigator.onLine === false) return;
+    if (backgroundState && backgroundState.retryAt > Date.now()) return;
+    busy = true; backgroundRunning = true; render();
+    try {
+      await root.navigator.locks.request('infomatyka-drive-sync-v1', { ifAvailable: true }, async lock => {
+        if (!lock) return;
+        const latest = JSON.parse(root.localStorage.getItem(SETTINGS_KEY) || '{}');
+        if (!latest.background || latest.scopePending || latest.reviewPending || latest.connectionActive === false || latest.boundAccount !== account.permissionId) return;
+        const selected = prefs.selected.filter(category => (latest.selected || []).includes(category));
+        const results = await Promise.allSettled(selected.map(category => engine.sync(category)));
+        const conflicts = [], deferred = [], errors = [];
+        let changed = false;
+        results.forEach((result, index) => {
+          const category = selected[index];
+          if (result.status === 'rejected') {
+            if (result.reason.code === 'DRIVE_EDITING') deferred.push(category);
+            else errors.push({ category, message: result.reason.message });
+          } else if (result.value.action === 'conflict') conflicts.push(category);
+          else if (['push', 'pull'].includes(result.value.action)) changed = true;
+        });
+        const failures = errors.length ? Math.min((backgroundState && backgroundState.failures || 0) + 1, 4) : 0;
+        backgroundState = { account: latest.boundAccount, checkedAt: new Date().toISOString(), conflicts, deferred, errors, failures,
+          retryAt: errors.length ? Date.now() + Math.min(300000, 30000 * 2 ** (failures - 1)) : 0, changed };
+        root.localStorage.setItem(BACKGROUND_KEY, JSON.stringify(backgroundState));
+        if (panel && conflicts.length) {
+          comparisons = await inspectAll(selected); cloudChoices = Object.create(null); notice = 'Synchronizacja w tle wymaga wyboru wersji w części danych.';
+        } else if (panel && changed) comparisons = [];
+      });
+    } catch (e) { backgroundState = { account: prefs.boundAccount, conflicts: [], deferred: [], errors: [{ message: e.message }], retryAt: Date.now() + 30000 }; }
+    finally {
+      busy = false; backgroundRunning = false;
+      if (applyingInBackground && root.document.body) { root.document.body.inert = previousInert; applyingInBackground = false; }
+      render(); if (needsReload) scheduleRefresh();
+    }
+  }
+  function backgroundMessage() {
+    if (!prefs.connectionActive) return '';
+    if (needsReload) return 'Drive: odśwież widok po pobraniu danych';
+    if (!connected()) return prefs.accountEmail ? 'Drive: połącz ponownie w ustawieniach' : '';
+    if (!prefs.background) return 'Drive: synchronizacja ręczna';
+    if (prefs.scopePending || prefs.reviewPending) return 'Drive: dokończ wybór synchronizacji w ustawieniach';
+    if (backgroundState && backgroundState.conflicts && backgroundState.conflicts.length) return 'Drive: wybierz wersję danych w ustawieniach';
+    if (backgroundState && backgroundState.deferred && backgroundState.deferred.length) return 'Drive: nowsze dane czekają na koniec edycji';
+    if (backgroundState && backgroundState.errors && backgroundState.errors.length) return 'Drive: zapis czeka na ponowienie';
+    if (root.navigator.onLine === false) return 'Drive: offline — dane pozostają lokalnie';
+    return backgroundRunning ? 'Drive: synchronizowanie…' : 'Drive: synchronizacja w tle aktywna';
+  }
+  function renderBackgroundStatus() {
+    if (!document.body) return;
+    let indicator = document.getElementById('infomatyka-drive-background-status');
+    if (!indicator) {
+      indicator = text('a', '', ''); indicator.id = 'infomatyka-drive-background-status'; indicator.href = '/p/ustawienia-konta.html';
+      indicator.setAttribute('aria-live', 'polite');
+      indicator.style.cssText = 'position:fixed;bottom:12px;right:12px;z-index:1000;max-width:calc(100vw - 24px);padding:8px 12px;border:1px solid #99f6e4;border-radius:10px;background:#f0fdfa;color:#115e59;font:13px/1.4 Arial,sans-serif;box-shadow:0 2px 8px #0001;text-decoration:none'; document.body.append(indicator);
+    }
+    const message = backgroundMessage(); indicator.hidden = !message || !!panel; if (indicator.textContent !== message) indicator.textContent = message;
   }
   function beginConnect(changeAccount = false, continuation = null) {
     if (!ready || busy || authorizing) return;
@@ -453,6 +682,8 @@
   async function synchronize(source = null, fetchLatest = false) {
     if (busy || authorizing || !prefs.selected.length) return;
     if (!connected() || !engine) { beginConnect(false, { synchronize: true }); return; }
+    clearTimeout(backgroundTimer);
+    if (!fetchLatest) { prefs.scopePending = false; prefs.reviewPending = true; savePrefs(); }
     const selected = [...prefs.selected];
     const reviewed = comparisons.filter(review => selected.includes(review.category));
     busy = true; notice = source ? 'Synchronizowanie wybranych danych…' : 'Porównywanie danych lokalnych i Google Drive…'; render();
@@ -502,7 +733,9 @@
           notice += comparisons.some(review => review.error) ? 'Nie udało się porównać wszystkich danych. Szczegóły poniżej.' : comparisons.some(differs) ?
             'Dane różnią się. Wybierz zapis wersji lokalnej albo wczytanie wersji z Drive.' : 'Dane są zgodne; nie trzeba niczego nadpisywać.';
         }
-        prefs = { ...prefs, ...JSON.parse(root.localStorage.getItem(SETTINGS_KEY) || '{}'), lastSync: new Date().toISOString() }; savePrefs();
+        prefs = { ...prefs, ...JSON.parse(root.localStorage.getItem(SETTINGS_KEY) || '{}'), lastSync: new Date().toISOString() };
+        if (!fetchLatest) prefs.reviewPending = comparisons.some(review => review.error || differs(review));
+        savePrefs();
       });
     } catch (e) { notice = e.message; }
     finally { busy = false; render(); }
@@ -533,6 +766,7 @@
         await engine.apply(copy.category, copy.data, await engine.capture(copy.category));
       });
       recovery = []; comparisons = []; cloudChoices = Object.create(null); notice = 'Przywrócono kopię lokalną. Drive zmieni się dopiero po wybraniu zapisu na Drive.';
+      prefs.reviewPending = true; savePrefs();
     } catch (e) { notice = e.message; }
     finally { busy = false; render(); }
   }
@@ -594,6 +828,7 @@
     return box;
   }
   function render() {
+    renderBackgroundStatus();
     if (!panel) return;
     panel.replaceChildren(); panel.append(text('h3', 'Synchronizacja z Google Drive'));
     panel.append(text('p', 'Zapisuj dane InfoMatyki na swoim Google Drive i przenoś je między urządzeniami. Aplikacja ma dostęp tylko do swojego prywatnego folderu, bez dostępu do Twoich dokumentów.'));
@@ -601,6 +836,10 @@
     top.append(text('span', connected() ? 'Połączono: ' + (account.emailAddress || account.displayName) : prefs.accountEmail ? 'Konto: ' + prefs.accountEmail + ' · połączenie do odnowienia' : 'Najpierw zaloguj się do Google Drive.', 'im-drive-status'));
     top.append(button(connected() ? 'Zmień konto' : prefs.accountEmail ? 'Połącz ponownie' : 'Zaloguj się do Google Drive', () => beginConnect(connected()), !ready, 'im-drive-secondary'));
     if (connected()) top.append(button('Odłącz', disconnect, false, 'im-drive-secondary')); panel.append(top);
+    const backgroundLabel = text('label', '', 'im-drive-choice'); const backgroundCheck = document.createElement('input'); backgroundCheck.type = 'checkbox'; backgroundCheck.checked = !!prefs.background; backgroundCheck.disabled = busy || authorizing;
+    backgroundCheck.addEventListener('change', () => { prefs.background = backgroundCheck.checked; savePrefs(); if (prefs.background) scheduleBackground(2000); else clearTimeout(backgroundTimer); render(); });
+    backgroundLabel.append(backgroundCheck, text('span', 'Synchronizuj automatycznie w tle na całej stronie')); panel.append(backgroundLabel);
+    panel.append(text('p', connected() ? backgroundMessage() : 'Po połączeniu z kontem motyw zapisuje zmiany w tle i okresowo sprawdza Drive. Przy konflikcie wymaga wyboru wersji.', 'im-drive-help'));
     const fetchLabel = text('label', '', 'im-drive-choice im-drive-fetch'); const fetchCheck = document.createElement('input'); fetchCheck.type = 'checkbox'; fetchCheck.checked = !!prefs.fetchLatest; fetchCheck.disabled = busy || authorizing;
     fetchCheck.addEventListener('change', () => { prefs.fetchLatest = fetchCheck.checked; savePrefs(); });
     fetchLabel.append(fetchCheck, text('span', 'Pobieraj zawsze najnowsze dane')); panel.append(fetchLabel);
@@ -614,13 +853,14 @@
         check.checked = group.categories.every(key => prefs.selected.includes(key)); check.indeterminate = !check.checked && group.categories.some(key => prefs.selected.includes(key));
         check.addEventListener('change', () => {
           prefs.selected = check.checked ? Object.keys(CATEGORIES).filter(key => prefs.selected.includes(key) || group.categories.includes(key)) : prefs.selected.filter(key => !group.categories.includes(key));
+          prefs.scopePending = true; clearTimeout(backgroundTimer);
           comparisons = []; recovery = []; cloudChoices = Object.create(null); savePrefs(); notice = 'Zakres zmieniony. Kliknij „Synchronizuj”, aby porównać dane.'; render();
         });
         const caption = text('span', ''); caption.append(text('strong', group.label), text('small', group.detail)); label.append(check, caption); grid.append(label);
       }); choices.append(grid); panel.append(choices);
-      panel.append(text('p', 'Wszystko jest domyślnie zaznaczone. Zmiana zaznaczeń nie uruchamia synchronizacji.', 'im-drive-help'));
+      panel.append(text('p', 'Wszystko jest domyślnie zaznaczone. Po zmianie zakresu automat czeka na kliknięcie „Synchronizuj” i zakończenie wyboru wersji.', 'im-drive-help'));
       panel.append(button(busy ? 'Synchronizowanie…' : 'Synchronizuj', () => synchronize(), !prefs.selected.length));
-      panel.append(text('p', 'Połączenie jest zachowane w tej karcie po odświeżeniu i powrocie do ustawień. Ważne do: ' + formatDate(new Date(token.expiresAt).toISOString()), 'im-drive-help'));
+      panel.append(text('p', 'Połączenie jest zachowane podczas przechodzenia między podstronami. Nowa karta tej samej przeglądarki może je przejąć od otwartej karty. Ważne do: ' + formatDate(new Date(token.expiresAt).toISOString()), 'im-drive-help'));
     } else if (!configured) panel.append(text('p', 'Administrator nie skonfigurował jeszcze połączenia Google Drive.', 'im-drive-help'));
     const status = text('p', notice, 'im-drive-status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); panel.append(status);
     if (comparisons.length && connected()) panel.append(renderComparison());
@@ -632,19 +872,31 @@
     recovery.forEach(copy => advanced.append(button('Przywróć: ' + CATEGORIES[copy.category].label + ' · ' + formatDate(copy.at) + ' · ' + formatBytes(byteSize(copy.data)), () => restoreCopy(copy), false, 'im-drive-secondary')));
     panel.append(advanced); if (recovery.length) advanced.open = true;
   }
-  root.InfoMatykaDrive = { categories: CATEGORIES, synchronize, disconnect, mount: async function (element) { panel = element; render(); await prepare(); } };
+  root.InfoMatykaDrive = { categories: CATEGORIES, synchronize, syncInBackground, disconnect,
+    mount: async function (element) { panel = element; if (!client) preparePromise = null; render(); await prepare(); } };
   root.addEventListener('storage', event => {
     if (event.key === SETTINGS_KEY || event.key === null) {
       try {
         const latest = JSON.parse(root.localStorage.getItem(SETTINGS_KEY));
-        if (!latest || (account && latest.boundAccount !== account.permissionId)) { disconnect(); return; }
-        prefs = { ...prefs, ...latest }; comparisons = []; recovery = []; cloudChoices = Object.create(null); render();
-      } catch (_) { disconnect(); }
-    }
+        if (!latest || latest.connectionActive === false || (account && latest.boundAccount !== account.permissionId)) { disconnect(false); return; }
+        prefs = { ...prefs, ...latest }; comparisons = []; recovery = []; cloudChoices = Object.create(null); render(); scheduleBackground(2000);
+      } catch (_) { disconnect(false); }
+    } else if (event.key === BACKGROUND_KEY) {
+      try { const state = JSON.parse(event.newValue); if (state && state.account === prefs.boundAccount) backgroundState = state; renderBackgroundStatus(); } catch (_) { }
+    } else if (event.key.startsWith(HYDRATION_PREFIX)) {
+      const category = event.key.slice(HYDRATION_PREFIX.length);
+      if (has(CATEGORIES, category) && !checkEpoch(category) && prefs.connectionActive) { needsReload = true; renderBackgroundStatus(); scheduleRefresh(); }
+    } else if (keyCategory.has(event.key)) localChanged(keyCategory.get(event.key));
   });
   setInterval(() => {
-    if (panel && token && !connected()) { token = null; account = null; engine = null; comparisons = []; clearSession(); notice = 'Dostęp Google wygasł. Kliknij „Połącz ponownie”, aby odnowić połączenie z zapamiętanym kontem.'; render(); }
-  }, 60000);
-  function mountSettings() { const target = document.getElementById('infomatyka-drive-settings'); if (target) root.InfoMatykaDrive.mount(target); }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mountSettings); else mountSettings();
+    renewEditLease();
+    if (token && !connected()) {
+      token = null; account = null; engine = null; comparisons = []; clearSession();
+      notice = 'Dostęp Google wygasł. Kliknij „Połącz ponownie”, aby odnowić połączenie z zapamiętanym kontem.'; render();
+    }
+    if (connected() && prefs.background) syncInBackground();
+    if (needsReload) scheduleRefresh();
+  }, 30000);
+  function startRuntime() { panel = document.getElementById('infomatyka-drive-settings'); installObservers(); render(); prepare(); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startRuntime); else startRuntime();
 })(typeof window !== 'undefined' ? window : globalThis);
