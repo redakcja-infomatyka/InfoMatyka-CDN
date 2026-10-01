@@ -640,23 +640,25 @@
     if (!prefs.connectionActive) return '';
     if (needsReload) return 'Drive: odśwież widok po pobraniu danych';
     if (!connected()) return prefs.accountEmail ? 'Drive: połącz ponownie w ustawieniach' : '';
-    if (!prefs.background) return 'Drive: synchronizacja ręczna';
+    if (!prefs.background) return '';
     if (prefs.scopePending || prefs.reviewPending) return 'Drive: dokończ wybór synchronizacji w ustawieniach';
     if (backgroundState && backgroundState.conflicts && backgroundState.conflicts.length) return 'Drive: wybierz wersję danych w ustawieniach';
     if (backgroundState && backgroundState.deferred && backgroundState.deferred.length) return 'Drive: nowsze dane czekają na koniec edycji';
     if (backgroundState && backgroundState.errors && backgroundState.errors.length) return 'Drive: zapis czeka na ponowienie';
     if (root.navigator.onLine === false) return 'Drive: offline — dane pozostają lokalnie';
-    return backgroundRunning ? 'Drive: synchronizowanie…' : 'Drive: synchronizacja w tle aktywna';
+    return '';
   }
   function renderBackgroundStatus() {
     if (!document.body) return;
     let indicator = document.getElementById('infomatyka-drive-background-status');
+    const message = backgroundMessage();
+    if (!message || panel) { if (indicator) indicator.remove(); return; }
     if (!indicator) {
       indicator = text('a', '', ''); indicator.id = 'infomatyka-drive-background-status'; indicator.href = '/p/ustawienia-konta.html';
       indicator.setAttribute('aria-live', 'polite');
       indicator.style.cssText = 'position:fixed;bottom:12px;right:12px;z-index:1000;max-width:calc(100vw - 24px);padding:8px 12px;border:1px solid #99f6e4;border-radius:10px;background:#f0fdfa;color:#115e59;font:13px/1.4 Arial,sans-serif;box-shadow:0 2px 8px #0001;text-decoration:none'; document.body.append(indicator);
     }
-    const message = backgroundMessage(); indicator.hidden = !message || !!panel; if (indicator.textContent !== message) indicator.textContent = message;
+    if (indicator.textContent !== message) indicator.textContent = message;
   }
   function beginConnect(changeAccount = false, continuation = null) {
     if (!ready || busy || authorizing) return;
@@ -839,7 +841,7 @@
     const backgroundLabel = text('label', '', 'im-drive-choice'); const backgroundCheck = document.createElement('input'); backgroundCheck.type = 'checkbox'; backgroundCheck.checked = !!prefs.background; backgroundCheck.disabled = busy || authorizing;
     backgroundCheck.addEventListener('change', () => { prefs.background = backgroundCheck.checked; savePrefs(); if (prefs.background) scheduleBackground(2000); else clearTimeout(backgroundTimer); render(); });
     backgroundLabel.append(backgroundCheck, text('span', 'Synchronizuj automatycznie w tle na całej stronie')); panel.append(backgroundLabel);
-    panel.append(text('p', connected() ? backgroundMessage() : 'Po połączeniu z kontem motyw zapisuje zmiany w tle i okresowo sprawdza Drive. Przy konflikcie wymaga wyboru wersji.', 'im-drive-help'));
+    panel.append(text('p', connected() ? backgroundMessage() || (prefs.background ? 'Zmiany synchronizują się automatycznie podczas korzystania ze strony.' : 'Synchronizuj dane ręcznie przyciskiem poniżej.') : 'Po połączeniu z kontem motyw zapisuje zmiany w tle i okresowo sprawdza Drive. Przy konflikcie wymaga wyboru wersji.', 'im-drive-help'));
     const fetchLabel = text('label', '', 'im-drive-choice im-drive-fetch'); const fetchCheck = document.createElement('input'); fetchCheck.type = 'checkbox'; fetchCheck.checked = !!prefs.fetchLatest; fetchCheck.disabled = busy || authorizing;
     fetchCheck.addEventListener('change', () => { prefs.fetchLatest = fetchCheck.checked; savePrefs(); });
     fetchLabel.append(fetchCheck, text('span', 'Pobieraj zawsze najnowsze dane')); panel.append(fetchLabel);
@@ -872,7 +874,7 @@
     recovery.forEach(copy => advanced.append(button('Przywróć: ' + CATEGORIES[copy.category].label + ' · ' + formatDate(copy.at) + ' · ' + formatBytes(byteSize(copy.data)), () => restoreCopy(copy), false, 'im-drive-secondary')));
     panel.append(advanced); if (recovery.length) advanced.open = true;
   }
-  root.InfoMatykaDrive = { categories: CATEGORIES, synchronize, syncInBackground, disconnect,
+  root.InfoMatykaDrive = { categories: CATEGORIES, synchronize, syncInBackground, disconnect, isConnected: connected,
     mount: async function (element) { panel = element; if (!client) preparePromise = null; render(); await prepare(); } };
   root.addEventListener('storage', event => {
     if (event.key === SETTINGS_KEY || event.key === null) {
