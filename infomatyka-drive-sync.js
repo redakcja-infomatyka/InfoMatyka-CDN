@@ -636,31 +636,29 @@
       render(); if (needsReload) scheduleRefresh();
     }
   }
-  function backgroundMessage() {
-    if (!prefs.connectionActive) return '';
-    if (needsReload) return 'Drive: odśwież widok po pobraniu danych';
-    if (notice && !ready && !connected()) return 'Drive: ' + notice;
-    if (!connected()) return prefs.accountEmail ? 'Drive: połącz ponownie w ustawieniach' : '';
-    if (!prefs.background) return 'Drive: synchronizacja ręczna';
-    if (prefs.scopePending || prefs.reviewPending) return 'Drive: dokończ wybór synchronizacji w ustawieniach';
-    if (backgroundState && backgroundState.conflicts && backgroundState.conflicts.length) return 'Drive: wybierz wersję danych w ustawieniach';
-    if (backgroundState && backgroundState.deferred && backgroundState.deferred.length) return 'Drive: nowsze dane czekają na koniec edycji';
-    if (backgroundState && backgroundState.errors && backgroundState.errors.length) return 'Drive: zapis czeka na ponowienie';
-    if (root.navigator.onLine === false) return 'Drive: offline — dane pozostają lokalnie';
-    if (backgroundRunning) return 'Drive: synchronizowanie…';
-    return backgroundState && backgroundState.checkedAt ? 'Drive: dane sprawdzone · ' + formatDate(backgroundState.checkedAt) : 'Drive: synchronizacja w tle włączona';
+  function driveStatus(message, state = 'warning') { return { message, state }; }
+  function backgroundStatus() {
+    if (!prefs.connectionActive) return null;
+    if (needsReload) return driveStatus('Drive: odśwież widok po pobraniu danych');
+    if (notice && !ready && !connected()) return driveStatus('Drive: ' + notice, authorizing ? 'syncing' : 'error');
+    if (!connected()) return prefs.accountEmail ? driveStatus('Drive: połącz ponownie w ustawieniach') : null;
+    if (!prefs.background) return driveStatus('Drive: synchronizacja ręczna', 'info');
+    if (prefs.scopePending || prefs.reviewPending) return driveStatus('Drive: dokończ wybór synchronizacji w ustawieniach');
+    if (backgroundState && backgroundState.conflicts && backgroundState.conflicts.length) return driveStatus('Drive: wybierz wersję danych w ustawieniach');
+    if (backgroundState && backgroundState.deferred && backgroundState.deferred.length) return driveStatus('Drive: nowsze dane czekają na koniec edycji');
+    if (root.navigator.onLine === false) return driveStatus('Drive: offline — dane pozostają lokalnie', 'offline');
+    if (backgroundState && backgroundState.errors && backgroundState.errors.length) return driveStatus('Drive: zapis czeka na ponowienie', 'error');
+    if (backgroundRunning) return driveStatus('Drive: synchronizowanie…', 'syncing');
+    return backgroundState && backgroundState.checkedAt ?
+      driveStatus('Drive: dane sprawdzone\n' + formatDate(backgroundState.checkedAt), 'success') :
+      driveStatus('Drive: synchronizacja w tle włączona', 'info');
   }
+  function backgroundMessage() { const status = backgroundStatus(); return status ? status.message : ''; }
   function renderBackgroundStatus() {
-    if (!document.body) return;
-    let indicator = document.getElementById('infomatyka-drive-background-status');
-    const message = backgroundMessage();
-    if (!message || panel) { if (indicator) indicator.remove(); return; }
-    if (!indicator) {
-      indicator = text('a', '', ''); indicator.id = 'infomatyka-drive-background-status'; indicator.href = '/p/ustawienia-konta.html';
-      indicator.setAttribute('aria-live', 'polite');
-      indicator.style.cssText = 'position:fixed;bottom:12px;right:12px;z-index:1000;max-width:calc(100vw - 24px);padding:8px 12px;border:1px solid #99f6e4;border-radius:10px;background:#f0fdfa;color:#115e59;font:13px/1.4 Arial,sans-serif;box-shadow:0 2px 8px #0001;text-decoration:none'; document.body.append(indicator);
-    }
-    if (indicator.textContent !== message) indicator.textContent = message;
+    if (!root.InfoMatykaDriveIndicator) return;
+    const status = backgroundStatus();
+    if (!status || panel) root.InfoMatykaDriveIndicator.hide();
+    else root.InfoMatykaDriveIndicator.show(status);
   }
   function beginConnect(changeAccount = false, continuation = null) {
     if (!ready || busy || authorizing) return;
