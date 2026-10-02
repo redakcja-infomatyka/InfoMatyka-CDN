@@ -510,7 +510,7 @@
   }
   function markEditing(event) {
     const target = event.target;
-    if (!target || !target.closest || target.closest('#infomatyka-drive-settings, #infomatyka-drive-background-status')) return;
+    if (!target || !target.closest || target.closest('#infomatyka-drive-settings, #infomatyka-drive-refresh, #infomatyka-drive-background-status')) return;
     if (event.type === 'pointerdown' && !target.closest('button, canvas, [contenteditable="true"], input, textarea, select')) return;
     pageEdited = true; renewEditLease();
   }
@@ -639,14 +639,16 @@
   function backgroundMessage() {
     if (!prefs.connectionActive) return '';
     if (needsReload) return 'Drive: odśwież widok po pobraniu danych';
+    if (notice && !ready && !connected()) return 'Drive: ' + notice;
     if (!connected()) return prefs.accountEmail ? 'Drive: połącz ponownie w ustawieniach' : '';
-    if (!prefs.background) return '';
+    if (!prefs.background) return 'Drive: synchronizacja ręczna';
     if (prefs.scopePending || prefs.reviewPending) return 'Drive: dokończ wybór synchronizacji w ustawieniach';
     if (backgroundState && backgroundState.conflicts && backgroundState.conflicts.length) return 'Drive: wybierz wersję danych w ustawieniach';
     if (backgroundState && backgroundState.deferred && backgroundState.deferred.length) return 'Drive: nowsze dane czekają na koniec edycji';
     if (backgroundState && backgroundState.errors && backgroundState.errors.length) return 'Drive: zapis czeka na ponowienie';
     if (root.navigator.onLine === false) return 'Drive: offline — dane pozostają lokalnie';
-    return '';
+    if (backgroundRunning) return 'Drive: synchronizowanie…';
+    return backgroundState && backgroundState.checkedAt ? 'Drive: dane sprawdzone · ' + formatDate(backgroundState.checkedAt) : 'Drive: synchronizacja w tle włączona';
   }
   function renderBackgroundStatus() {
     if (!document.body) return;
@@ -875,6 +877,7 @@
     panel.append(advanced); if (recovery.length) advanced.open = true;
   }
   root.InfoMatykaDrive = { categories: CATEGORIES, synchronize, syncInBackground, disconnect, isConnected: connected,
+    isBusy: () => busy || authorizing,
     mount: async function (element) { panel = element; if (!client) preparePromise = null; render(); await prepare(); } };
   root.addEventListener('storage', event => {
     if (event.key === SETTINGS_KEY || event.key === null) {
