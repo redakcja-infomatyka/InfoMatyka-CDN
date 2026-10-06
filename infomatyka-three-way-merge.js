@@ -7,11 +7,12 @@
   const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
   const hasStableIds = values => values.every(value => isObject(value) &&
     (typeof value.id === 'string' || typeof value.eventId === 'string'));
+  const isJsonOmitted = value => value === undefined || typeof value === 'function' || typeof value === 'symbol';
 
   function stable(value) {
     if (value === MISSING) return '"__infomatyka_missing__"';
-    if (Array.isArray(value)) return '[' + value.map(stable).join(',') + ']';
-    if (isObject(value)) return '{' + Object.keys(value).sort().map(key =>
+    if (Array.isArray(value)) return '[' + value.map(item => isJsonOmitted(item) ? 'null' : stable(item)).join(',') + ']';
+    if (isObject(value)) return '{' + Object.keys(value).filter(key => !isJsonOmitted(value[key])).sort().map(key =>
       JSON.stringify(key) + ':' + stable(value[key])).join(',') + '}';
     return JSON.stringify(value);
   }
