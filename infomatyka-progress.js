@@ -1,5 +1,25 @@
 (function() {
-  const STORAGE_KEY = 'infomatyka_postep_uzytkownika';
+  const STORAGE_KEY = 'infomatyka-progress-state';
+  const EVENTS_KEY = 'infomatyka-progress-events';
+
+  function readProgressEvents() {
+    try {
+      const events = JSON.parse(localStorage.getItem(EVENTS_KEY) || '[]');
+      return Array.isArray(events) ? events.filter(event => event && typeof event.eventId === 'string') : [];
+    } catch (_) { return []; }
+  }
+
+  function createProgressEventId() {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+    return 'xp-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+  }
+
+  function ensureProgressHistoryIds(history) {
+    history.forEach(entry => {
+      if (!entry || typeof entry !== 'object' || entry.id) return;
+      entry.id = 'progress-history-' + [entry.timestamp || '', entry.type || '', entry.name || '', entry.materialId || ''].join('-');
+    });
+  }
 
   let globalConfig = {
     xpBrackets: [
@@ -128,7 +148,7 @@
       var container = document.getElementById('custom-page-banner');
       if (!container) return;
 
-      if (!bannerConfig || !bannerConfig.active || sessionStorage.getItem('infomatyka_page_banner_dismissed') === 'true') {
+      if (!bannerConfig || !bannerConfig.active || sessionStorage.getItem('infomatyka-device-page-banner-dismissed') === 'true') {
         container.classList.add('hidden');
         return;
       }
@@ -232,7 +252,7 @@
         if (closeBtn) {
           closeBtn.addEventListener('click', function() {
             container.classList.add('hidden');
-            sessionStorage.setItem('infomatyka_page_banner_dismissed', 'true');
+            sessionStorage.setItem('infomatyka-device-page-banner-dismissed', 'true');
           });
         }
       }
@@ -290,6 +310,15 @@
       if (!parsed.stats.dailyTasksCompleted) parsed.stats.dailyTasksCompleted = 0;
       if (!parsed.stats.maxDailyTaskStreak) parsed.stats.maxDailyTaskStreak = 0;
 
+      const events = readProgressEvents();
+      const baseline = Number.isFinite(Number(parsed.xpBaseline))
+        ? Number(parsed.xpBaseline)
+        : Number(parsed.xp || 0);
+      parsed.xpBaseline = baseline;
+      parsed.xp = baseline + events.reduce((total, event) => total + (Number(event.deltaXp) || 0), 0);
+      parsed.stats.totalXp = parsed.xp;
+      ensureProgressHistoryIds(parsed.history);
+
       if (parsed.streak > 0 && parsed.lastActivityDate) {
         const todayStr = new Date().toDateString();
         const yesterday = new Date();
@@ -305,6 +334,32 @@
     },
 
     saveProgress: function(data) {
+      const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+      const existingEvents = readProgressEvents();
+      const previousXp = Number(stored && stored.xp) || 0;
+      const previousEventTotal = existingEvents.reduce((total, event) => total + (Number(event.deltaXp) || 0), 0);
+      const baseline = stored && Number.isFinite(Number(stored.xpBaseline))
+        ? Number(stored.xpBaseline) : previousXp - previousEventTotal;
+      const nextXp = Number(data.xp) || 0;
+      const deltaXp = nextXp - previousXp;
+      data.xpBaseline = baseline;
+      data.stats = data.stats || {};
+      data.stats.totalXp = nextXp;
+      data.history = Array.isArray(data.history) ? data.history : [];
+      ensureProgressHistoryIds(data.history);
+
+      if (deltaXp !== 0) {
+        const latestActivity = data.history[0] || {};
+        existingEvents.push({
+          eventId: createProgressEventId(),
+          type: latestActivity.type || 'xp-adjustment',
+          deltaXp,
+          activityId: latestActivity.id || null,
+          materialId: latestActivity.materialId || null,
+          createdAt: Number(latestActivity.timestamp) || Date.now()
+        });
+        localStorage.setItem(EVENTS_KEY, JSON.stringify(existingEvents));
+      }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
       window.dispatchEvent(new Event('infomatyka_progress_updated'));
       this.updateNavbarDropdown();
