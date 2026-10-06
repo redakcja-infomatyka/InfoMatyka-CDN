@@ -12,7 +12,7 @@
   const MODULE_VERSION = '3.0.0';
   const SYNC_SCHEMA = 3;
   const BOARD_SCHEMA = 4;
-  const BOARD_DB_VERSION = 2;
+  const BOARD_DB_VERSION = 3;
   const SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
   const SETTINGS_KEY = 'infomatyka-sync-preferences';
   const DEVICE_KEY = 'infomatyka-sync-device';
@@ -171,7 +171,9 @@
       }
       return new Promise((resolve, reject) => {
         const name = 'infomatyka_tablice_interaktywne';
-        const request = createIfMissing ? this.indexedDB.open(name, BOARD_DB_VERSION) : this.indexedDB.open(name);
+        // Existing databases also need schema upgrades during read-only capture.
+        // Opening without a version would leave older databases missing stores such as `assets`.
+        const request = this.indexedDB.open(name, BOARD_DB_VERSION);
         let blocked = false, missing = false;
         request.onupgradeneeded = event => {
           if (!createIfMissing && event.oldVersion === 0) { missing = true; request.transaction.abort(); return; }
@@ -1541,11 +1543,13 @@
     const safeChanges = different.filter(review => ['push', 'pull', 'merge'].includes(review.action) && !review.mergePreview?.conflicts.length);
     const conflictReviews = different.filter(review => review.action === 'conflict' && review.mergePreview?.conflicts.length);
     const conflictCount = conflictReviews.reduce((sum, review) => sum + review.mergePreview.conflicts.length, 0);
-    box.append(text('p', safeChanges.length ? 'Gotowe do połączenia: ' + safeChanges.map(review => CATEGORIES[review.category].label +
+    const hasComparisonErrors = comparisons.some(review => review.error);
+    box.append(text('p', hasComparisonErrors ? 'Nie wszystkie dane udało się porównać. Szczegóły błędu są poniżej.' : safeChanges.length ? 'Gotowe do połączenia: ' + safeChanges.map(review => CATEGORIES[review.category].label +
       (review.mergePreview ? ' · ' + (review.mergePreview.stats.addedLocal + review.mergePreview.stats.addedRemote + review.mergePreview.stats.deleted) + ' zmian' : '')).join(' · ') :
       different.length ? 'Są zmiany wymagające sprawdzenia.' : 'Wersje są zgodne; nie trzeba niczego nadpisywać.', 'im-drive-help'));
     if (conflictCount) box.append(text('p', 'Konflikty: ' + conflictCount + ' pól wymagają decyzji. Zmiany lokalne i Drive są pokazane osobno; obie wersje zostaną zapisane w kopiach odzyskiwania przed zastosowaniem wyboru.', 'im-drive-status'));
     const detail = text('details', '', 'im-drive-details'); detail.append(text('summary', 'Szczegóły różnic i dat'));
+    detail.open = hasComparisonErrors;
     comparisons.forEach(review => {
       if (review.error) { detail.append(text('p', CATEGORIES[review.category].label + ': ' + review.error, 'im-drive-status')); return; }
       review.duplicateDevices.forEach(duplicate => detail.append(text('p', CATEGORIES[review.category].label + ': wykryto kilka plików nagłówka urządzenia ' + duplicate.device + '. Synchronizacja tej kategorii jest zatrzymana; sprawdź pliki na Drive.', 'im-drive-status')));
@@ -1554,7 +1558,8 @@
       const row = text('div', '', 'im-drive-diff-row'); row.append(text('strong', CATEGORIES[review.category].label),
         text('span', 'Lokalnie: ' + formatBytes(review.localVersion.bytes) + ' · ostatnia zmiana ' + (review.localVersion.savedAt ? formatDate(review.localVersion.savedAt) : 'nieznana') + ' · hash ' + review.localHash),
         text('span', record ? 'Drive: ' + formatBytes(record.fileBytes) + ' · ' + formatDate(record.savedAt) + ' · device ' + record.device + ' · hash ' + record.hash + ' · version ' + (record.driveVersion || 'brak') + ' · revision ' + (record.headRevisionId || 'brak') : 'Drive: brak kopii'),
-        text('span', ['same', 'none'].includes(review.action) ? 'Zgodne' : !review.cloud.length ? 'Tylko lokalnie' : review.localVersion.empty ? 'Tylko na Drive' : 'Różna zawartość'),
+        text('span', review.action === 'same' ? 'Zgodne' : review.action === 'none' ? 'Brak danych do synchronizacji' :
+          !review.cloud.length ? 'Tylko lokalnie' : review.localVersion.empty ? 'Tylko na Drive' : 'Różna zawartość'),
         text('span', 'Stan: localDirty=' + state.localDirty + ' · remoteChanged=' + state.remoteChanged +
           ' · ostatnie sprawdzenie ' + (state.lastCheckedAt ? formatDate(state.lastCheckedAt) : 'brak') +
           ' · ostatnia udana synchronizacja ' + (state.lastSuccessfulSyncAt ? formatDate(state.lastSuccessfulSyncAt) : 'brak')));
