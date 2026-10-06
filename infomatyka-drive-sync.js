@@ -23,28 +23,6 @@
       .map(key => JSON.stringify(key) + ':' + stable(value[key])).join(',') + '}';
     return JSON.stringify(value);
   }
-  function parseJson(text) {
-    try { return JSON.parse(text); }
-    catch (error) {
-      const sentinel = '\u0000__INFOMATYKA_UNDEFINED_PROPERTY__\u0000';
-      const repaired = text.replace(/("(?:\\.|[^"\\])*"\s*:\s*)undefined(?=\s*[,}])/g,
-        (_, property) => property + JSON.stringify(sentinel));
-      if (repaired === text) throw error;
-      let value;
-      try { value = JSON.parse(repaired); } catch (_) { throw error; }
-      const removeUndefinedProperties = item => {
-        if (Array.isArray(item)) return item.map(child => child === sentinel ? null : removeUndefinedProperties(child));
-        if (object(item)) {
-          for (const [key, child] of Object.entries(item)) {
-            if (child === sentinel) delete item[key];
-            else item[key] = removeUndefinedProperties(child);
-          }
-        }
-        return item;
-      };
-      return removeUndefinedProperties(value);
-    }
-  }
   function manifestData(snapshot) {
     if (!snapshot || !has(snapshot, 'boardAssetBlobs')) return snapshot;
     const { boardAssetBlobs, ...rest } = snapshot; return rest;
@@ -265,9 +243,24 @@
       }
       if (type === 'blob') return response.blob();
       const text = await response.text();
-      if (type === 'file') return { data: text ? parseJson(text) : null, etag: response.headers.get('ETag') };
+      if (type === 'file') return { data: text ? JSON.parse(text) : null, etag: response.headers.get('ETag') };
       if (new TextEncoder().encode(text).length > MAX_SAVE_BYTES + 100000) throw new Error('Zapis Drive przekracza limit 8 MiB.');
-      return text ? parseJson(text) : null;
+      return text ? JSON.parse(text) : null;
+    }
+    async listAppDataFiles() {
+      const files = [];
+      let pageToken = '';
+      do {
+        const params = new URLSearchParams({ spaces: 'appDataFolder', pageSize: '1000', fields: 'nextPageToken,files(id,name)' });
+        if (pageToken) params.set('pageToken', pageToken);
+        const page = await this.request('drive/v3/files?' + params);
+        files.push(...(page.files || []));
+        pageToken = page.nextPageToken || '';
+      } while (pageToken);
+      return files;
+    }
+    deleteFile(id) {
+      return this.request('drive/v3/files/' + encodeURIComponent(id), { method: 'DELETE' });
     }
     async findSave() {
       const params = new URLSearchParams({ spaces: 'appDataFolder', pageSize: '10',
@@ -360,6 +353,7 @@
     historyKey() { return 'history:' + this.account; }
     async loadState() { return await this.store.getItem(this.baseKey()) || null; }
     async saveState(state) { await this.store.setItem(this.baseKey(), state); }
+    async clearRemoteBase() { await this.store.removeItem(this.baseKey()); }
     async hash(snapshot) { return digest(snapshot, this.crypto); }
     async capture(verifyAssets = false) {
       const datasets = {};
@@ -560,13 +554,21 @@
     if (panel) {
       panel.replaceChildren();
       const title = document.createElement('h3'); title.textContent = 'Zapis w chmurze';
+      const heading = document.createElement('div'); heading.className = 'im-drive-heading';
+      const deleteButton = document.createElement('button'); deleteButton.type = 'button';
+      deleteButton.className = 'im-drive-button im-drive-secondary im-drive-trash-button';
+      deleteButton.setAttribute('aria-label', 'Usuń wszystkie dane InfoMatyki z Google Drive');
+      deleteButton.title = connected() ? 'Usuń wszystkie dane InfoMatyki z Google Drive' : 'Połącz Google Drive, aby usunąć dane';
+      deleteButton.disabled = busy || !connected(); deleteButton.onclick = deleteCloudData;
+      deleteButton.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>';
+      heading.append(title, deleteButton);
       const status = document.createElement('p'); status.className = 'im-drive-status'; status.setAttribute('role', 'status'); status.textContent = notice;
       const actions = document.createElement('div'); actions.className = 'im-drive-actions';
       const add = (label, fn, secondary) => { const button = document.createElement('button'); button.type = 'button'; button.className = 'im-drive-button' + (secondary ? ' im-drive-secondary' : ''); button.textContent = label; button.disabled = busy; button.onclick = fn; actions.append(button); };
       if (!connected()) add('Połącz Google Drive', connect); else { add('Synchronizuj teraz', synchronize); add('Odłącz Google Drive', disconnect, true); }
       add(historyOpen ? 'Ukryj historię danych' : 'Historia danych', async () => { historyOpen = !historyOpen; historyItems = engine ? await engine.listHistory() : []; render(); }, true);
       add('Pobierz kopię lokalną', downloadLocalBackup, true);
-      panel.append(title, status, actions);
+      panel.append(heading, status, actions);
       if (historyOpen) for (const copy of historyItems) {
         const row = document.createElement('div'); row.className = 'im-drive-toolbar';
         const label = document.createElement('span'); label.textContent = formatDate(copy.createdAt) + ' · ' + formatBytes(copy.bytes) + ' · ' + (copy.reason || '');
@@ -684,6 +686,39 @@
     engine = createEngine(user.permissionId);
   }
   function connect() { tokenClient?.requestAccessToken({ prompt: 'consent' }); }
+  async function deleteCloudData() {
+    if (!connected() || !engine || busy) return;
+    const confirmed = root.confirm('Usunąć trwale wszystkie pliki InfoMatyki z ukrytego folderu danych tej aplikacji na Google Drive? Zostaną usunięte obecne zapisy schema 5, starsze zapisy schema 3 oraz pliki tablic. Dane lokalne i lokalna historia kopii pozostaną. Operacji nie można cofnąć.');
+    if (!confirmed) return;
+    busy = true; notice = 'Sprawdzanie danych aplikacji na Google Drive…'; render();
+    let deletedCount = 0, totalCount = 0;
+    const removeFiles = async () => {
+      const files = await transport.listAppDataFiles();
+      totalCount = files.length;
+      for (let index = 0; index < files.length; index++) {
+        await transport.deleteFile(files[index].id);
+        deletedCount = index + 1;
+        if ((index + 1) % 10 === 0 || index + 1 === files.length) {
+          notice = 'Usuwanie danych z Google Drive: ' + (index + 1) + '/' + files.length + '…';
+          render();
+        }
+      }
+      await engine.clearRemoteBase();
+      review = null; closeConflict();
+      notice = files.length
+        ? 'Usunięto dane aplikacji z Google Drive. Dane lokalne pozostały; kolejna synchronizacja utworzy nowy zapis.'
+        : 'Na Google Drive nie było danych aplikacji do usunięcia. Dane lokalne pozostały.';
+    };
+    try {
+      if (root.navigator.locks) await root.navigator.locks.request('infomatyka-cloud-save-v5', removeFiles);
+      else await removeFiles();
+    } catch (error) {
+      notice = deletedCount && deletedCount < totalCount
+        ? 'Usunięto część danych (' + deletedCount + '/' + totalCount + '). Ponów czyszczenie, aby usunąć resztę.'
+        : error.message;
+    }
+    finally { busy = false; render(); }
+  }
   function disconnect() {
     token = null; account = null; clearSession(); preferences.connectionActive = false; savePrefs();
     closeConflict(); notice = 'Odłączono Google Drive. Dane pozostają na tym urządzeniu.'; render();
@@ -717,7 +752,7 @@
   function install() {
     panel = document.getElementById('infomatyka-drive-settings');
     ensureConflictStyles();
-    root.InfoMatykaCloudSave = { version: MODULE_VERSION, connect, disconnect, sync: synchronize, markDirty,
+    root.InfoMatykaCloudSave = { version: MODULE_VERSION, connect, disconnect, sync: synchronize, markDirty, deleteCloudData,
       getStatus: () => ({ connected: connected(), account: account?.emailAddress || '', message: notice, busy }),
       downloadBackup: downloadLocalBackup, openHistory: async () => { historyOpen = true; historyItems = engine ? await engine.listHistory() : []; render(); },
       resolveConflict, inspect: () => engine ? engine.inspect() : Promise.resolve(null),
