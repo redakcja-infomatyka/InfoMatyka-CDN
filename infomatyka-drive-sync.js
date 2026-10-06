@@ -372,6 +372,7 @@
       await this.store.setItem(this.historyKey(), [copy, ...list].slice(0, HISTORY_LIMIT));
     }
     async listHistory() { return await this.store.getItem(this.historyKey()) || []; }
+    async clearHistory() { await this.store.removeItem(this.historyKey()); }
     async inspect() {
       const local = await this.capture(), localHash = await this.hash(local), state = await this.loadState();
       let file = null;
@@ -569,11 +570,28 @@
       add(historyOpen ? 'Ukryj historię danych' : 'Historia danych', async () => { historyOpen = !historyOpen; historyItems = engine ? await engine.listHistory() : []; render(); }, true);
       add('Pobierz kopię lokalną', downloadLocalBackup, true);
       panel.append(heading, status, actions);
-      if (historyOpen) for (const copy of historyItems) {
-        const row = document.createElement('div'); row.className = 'im-drive-toolbar';
-        const label = document.createElement('span'); label.textContent = formatDate(copy.createdAt) + ' · ' + formatBytes(copy.bytes) + ' · ' + (copy.reason || '');
-        const restore = document.createElement('button'); restore.className = 'im-drive-button im-drive-secondary'; restore.textContent = 'Przywróć'; restore.onclick = () => restoreHistory(copy);
-        row.append(label, restore); panel.append(row);
+      if (historyOpen) {
+        const historyHeader = document.createElement('div'); historyHeader.className = 'im-drive-history-header';
+        const historyLabel = document.createElement('span'); historyLabel.className = 'im-drive-help';
+        historyLabel.textContent = 'Lokalne kopie odzyskiwania';
+        const clearButton = document.createElement('button'); clearButton.type = 'button';
+        clearButton.className = 'im-drive-button im-drive-secondary im-drive-history-clear';
+        clearButton.textContent = 'Usuń wszystkie kopie'; clearButton.disabled = busy || historyItems.length === 0;
+        clearButton.onclick = clearHistory;
+        historyHeader.append(historyLabel, clearButton); panel.append(historyHeader);
+        if (!historyItems.length) {
+          const emptyHistory = document.createElement('p'); emptyHistory.className = 'im-drive-help';
+          emptyHistory.textContent = 'Brak zapisanych lokalnych kopii.'; panel.append(emptyHistory);
+        }
+        for (const copy of historyItems) {
+          const row = document.createElement('div'); row.className = 'im-drive-toolbar';
+          const label = document.createElement('span'); label.className = 'im-drive-history-label';
+          label.textContent = formatDate(copy.createdAt) + ' · ' + formatBytes(copy.bytes) + ' · ' + (copy.reason || '');
+          const restore = document.createElement('button'); restore.type = 'button';
+          restore.className = 'im-drive-button im-drive-secondary'; restore.textContent = 'Przywróć';
+          restore.disabled = busy; restore.onclick = () => restoreHistory(copy);
+          row.append(label, restore); panel.append(row);
+        }
       }
     }
     root.dispatchEvent(new CustomEvent('infomatyka:cloud-save-status', { detail: { connected: connected(), account: account?.emailAddress || '', message: notice, busy } }));
@@ -655,6 +673,16 @@
     if (busy || !engine) return; busy = true;
     try { await engine.restore(copy.id); notice = 'Przywrócono kopię lokalną. Zmiany zostaną sprawdzone przed wysłaniem.'; historyItems = await engine.listHistory(); }
     catch (error) { notice = error.message; } finally { busy = false; render(); }
+  }
+  async function clearHistory() {
+    if (busy || !engine || !historyItems.length) return;
+    if (!root.confirm('Usunąć wszystkie lokalne kopie z Historii danych na tym urządzeniu? Nie usunie to bieżących danych ani zapisu na Google Drive.')) return;
+    busy = true; notice = 'Usuwanie lokalnych kopii…'; render();
+    try {
+      await engine.clearHistory(); historyItems = await engine.listHistory();
+      notice = 'Usunięto lokalne kopie z Historii danych.';
+    } catch (error) { notice = error.message; }
+    finally { busy = false; render(); }
   }
   async function loadGIS() {
     if (root.google?.accounts?.oauth2) return;
