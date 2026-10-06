@@ -915,7 +915,7 @@
     baseStore = getBaseStore();
     engine = new SyncEngine({ storage: root.localStorage, bases: baseStore, backups: backupStore,
       boards: new BoardStore(root.indexedDB, root.crypto, notifyBoardsChanged), crypto: root.crypto, transport, device, deviceName: prefs.deviceName || '', account: user.permissionId,
-      beforeApply: () => {
+      beforeApply: category => {
         if (!prefs.connectionActive || !connected() || account.permissionId !== user.permissionId) {
           const error = new Error('Połączenie zostało zakończone. Dane lokalne pozostają zachowane.'); error.code = 'DRIVE_DISCONNECTED'; throw error;
         }
