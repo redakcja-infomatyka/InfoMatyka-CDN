@@ -12,7 +12,7 @@
   const MODULE_VERSION = '3.0.0';
   const SYNC_SCHEMA = 3;
   const BOARD_SCHEMA = 4;
-  const BOARD_DB_VERSION = 3;
+  const BOARD_DB_VERSION = 4;
   const SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
   const SETTINGS_KEY = 'infomatyka-sync-preferences';
   const DEVICE_KEY = 'infomatyka-sync-device';
@@ -177,7 +177,7 @@
         let blocked = false, missing = false;
         request.onupgradeneeded = event => {
           if (!createIfMissing && event.oldVersion === 0) { missing = true; request.transaction.abort(); return; }
-          if (createIfMissing) BOARD_STORES.forEach(storeName => {
+          BOARD_STORES.forEach(storeName => {
             if (!request.result.objectStoreNames.contains(storeName)) request.result.createObjectStore(storeName, { keyPath: 'id' });
           });
         };
