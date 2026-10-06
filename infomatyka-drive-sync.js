@@ -1,4 +1,4 @@
-/* InfoMatyka: private, browser-only Google Drive synchronization (schema 2).
+/* InfoMatyka: private, browser-only Google Drive synchronization (schema 3).
  * OAuth access survives navigation in tab-scoped sessionStorage until Google expiry.
  * Each device writes its own head; no client secrets or refresh tokens are used.
  * Vector clocks detect simultaneous changes; conflicts require a user decision.
@@ -6,15 +6,18 @@
 (function (root) {
   'use strict';
   if (root.InfoMatykaDrive) return;
-  const MODULE_VERSION = '2.0.0';
-  const SYNC_SCHEMA = 2;
+  const DATA_REGISTRY = root.InfoMatykaDataRegistry || (typeof module !== 'undefined' && module.exports ? require('./infomatyka-data-registry.js') : null);
+  const MERGE_CORE = root.InfoMatykaThreeWayMerge || (typeof module !== 'undefined' && module.exports ? require('./infomatyka-three-way-merge.js') : null);
+  if (!DATA_REGISTRY || !MERGE_CORE) throw new Error('Nie załadowano centralnego rejestru ani modułu three-way merge.');
+  const MODULE_VERSION = '3.0.0';
+  const SYNC_SCHEMA = 3;
   const BOARD_SCHEMA = 4;
   const BOARD_DB_VERSION = 2;
   const SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
-  const SETTINGS_KEY = 'infomatyka_drive_preferences_v2';
-  const LEGACY_SETTINGS_KEY = 'infomatyka_drive_preferences_v1';
-  const DEVICE_KEY = 'infomatyka_drive_device_v1';
-  const STATE_PREFIX = 'infomatyka_drive_state_v2_';
+  const SETTINGS_KEY = 'infomatyka-sync-preferences';
+  const DEVICE_KEY = 'infomatyka-sync-device';
+  const STATE_PREFIX = 'infomatyka-sync-state-';
+  const BASE_STORE_NAME = 'infomatyka-sync-bases';
   const MAX_BYTES = 8 * 1024 * 1024;
   const MAX_ASSET_BYTES = 80 * 1024 * 1024;
   const MAX_ASSET_TOTAL_BYTES = 500 * 1024 * 1024;
@@ -23,18 +26,58 @@
   const MAX_FILES = 100;
   const BOARD_STORES = ['boards', 'boardIndex', 'folders', 'assets', 'meta'];
   const SYNCABLE_META_IDS = new Set();
-  const CATEGORIES = {
-    profile: { label: 'Profil i dostępność', keys: ['generator_profil_uzytkownika', 'infomatyka_accessibility'] },
-    progress: { label: 'XP, odznaki i ustawienia grywalizacji', keys: ['infomatyka_postep_uzytkownika'] },
-    learning: { label: 'Postęp w nauce', keys: ['infomatyka_postep_nauki'] },
-    favorites: { label: 'Ulubione artykuły', keys: ['infomatyka_ulubione_artykuly'] },
-    generator: { label: 'Generator: zestawy, zadania i materiały', keys: ['generator_zestawy_zadan', 'generator_szybkie_kartkowki', 'generator_baza_zadan', 'generator_wlasne_moduly', 'generator_skala_latex', 'generator_zapisane_materialy', 'generator_ignorowane_brakujace_zadania'], tasks: true },
-    teacher: { label: 'Klasy, kalendarz i raporty testów', keys: ['infomatyka_teacher_data', 'generator_klasy_tablicy', 'generator_sesje_tablicy', 'generator_konfiguracja_raportow', 'generator_progi_ocen', 'generator_wybrane_rekomendacje', 'infomatyka_setup_settings'] },
-    boards: { label: 'Tablice interaktywne, obrazy, foldery i powiązania z lekcjami', keys: ['wb3-palm-eraser', 'wb3-toolbar-layout'], boards: true }
-  };
+  const CATEGORIES = DATA_REGISTRY.categories;
   const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
   const object = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+  const isDeletedRow = row => object(row) && row.__deleted === true;
+  function projectBoardTombstones(data) {
+    if (!object(data)) return data;
+    return Object.fromEntries(Object.entries(data).map(([store, rows]) => [store,
+      Array.isArray(rows) ? rows.filter(row => !isDeletedRow(row)) : rows]));
+  }
   const withoutBlob = asset => { const { blob, ...record } = asset; return record; };
+  function withoutDerivedProgress(value) {
+    if (!object(value)) return value;
+    const result = { ...value };
+    delete result.xp;
+    delete result.xpBaseline;
+    if (object(result.stats)) {
+      result.stats = { ...result.stats };
+      delete result.stats.totalXp;
+    }
+    return result;
+  }
+  function restoreTombstones(current, base) {
+    if (Array.isArray(current) && Array.isArray(base)) {
+      const identity = item => object(item) ? String(item.id || item.eventId || '') : String(item);
+      const currentById = new Map(current.map(item => [identity(item), item]));
+      const baseById = new Map(base.map(item => [identity(item), item]));
+      const result = [], included = new Set();
+      for (const item of base) {
+        const id = identity(item), currentItem = currentById.get(id);
+        if (currentItem !== undefined) result.push(restoreTombstones(currentItem, item));
+        else if (object(item) && item.__deleted === true) result.push(item);
+        else continue;
+        included.add(id);
+      }
+      for (const item of current) {
+        const id = identity(item);
+        if (!included.has(id)) result.push(baseById.has(id) ? restoreTombstones(item, baseById.get(id)) : item);
+      }
+      return result;
+    }
+    if (object(current) && object(base)) {
+      const result = { ...current };
+      for (const key of Object.keys(result)) if (has(base, key)) result[key] = restoreTombstones(result[key], base[key]);
+      return result;
+    }
+    return current;
+  }
+  function stripTombstones(value) {
+    if (Array.isArray(value)) return value.filter(item => !(object(item) && item.__deleted === true)).map(stripTombstones);
+    if (object(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, stripTombstones(item)]));
+    return value;
+  }
   const manifestData = data => {
     if (!data || !has(data, 'boardAssetBlobs')) return data;
     const { boardAssetBlobs, ...manifest } = data;
@@ -45,27 +88,35 @@
     if (object(value)) return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + stable(value[k])).join(',') + '}';
     return JSON.stringify(value);
   }
+  function decodeStoredValue(storage, key) {
+    const raw = storage.getItem(key);
+    if (raw === null) return null;
+    try { return JSON.parse(raw); } catch (_) { return raw; }
+  }
+  function encodeStoredValue(value) { return JSON.stringify(value); }
+  function dataBaseKey(account, datasetId) { return account + ':' + datasetId; }
   const byteSize = value => new TextEncoder().encode(stable(manifestData(value))).length;
   function validateBoards(data) {
     if (!object(data) || Object.keys(data).length !== BOARD_STORES.length || BOARD_STORES.some(name =>
       !Array.isArray(data[name]) || data[name].some(row => !object(row) || typeof row.id !== 'string' || !row.id) ||
       new Set(data[name].map(row => row.id)).size !== data[name].length)) throw new Error('Nieprawidłowa kopia biblioteki tablic.');
-    const index = new Map(data.boardIndex.map(row => [row.id, row]));
-    if (data.boards.some(row => !object(row.project) || !Array.isArray(row.project.pages) ||
+    const active = Object.fromEntries(BOARD_STORES.map(name => [name, data[name].filter(row => !isDeletedRow(row))]));
+    const index = new Map(active.boardIndex.map(row => [row.id, row]));
+    if (active.boards.some(row => !object(row.project) || !Array.isArray(row.project.pages) ||
       row.project.version !== '4.0' || !index.has(row.id) || index.get(row.id).deletedAt) ||
-      data.boardIndex.some(row => typeof row.name !== 'string' || !Number.isSafeInteger(row.revision) || row.revision < 1 ||
-        (!row.deletedAt && !data.boards.some(board => board.id === row.id))) ||
-      data.folders.some(row => typeof row.name !== 'string') ||
-      data.assets.some(row => typeof row.name !== 'string' || typeof row.mime !== 'string' ||
+      active.boardIndex.some(row => typeof row.name !== 'string' || !Number.isSafeInteger(row.revision) || row.revision < 1 ||
+        (!row.deletedAt && !active.boards.some(board => board.id === row.id))) ||
+      active.folders.some(row => typeof row.name !== 'string') ||
+      active.assets.some(row => typeof row.name !== 'string' || typeof row.mime !== 'string' ||
         !/^(image\/|application\/pdf$)/i.test(row.mime) || !Number.isSafeInteger(row.size) || row.size < 0 ||
         row.size > MAX_ASSET_BYTES || !/^[a-f0-9]{64}$/.test(row.sha256 || '') || !object(row.metadata))) {
       throw new Error('Kopia tablic jest niekompletna lub uszkodzona.');
     }
-    if (data.assets.reduce((sum, asset) => sum + asset.size, 0) > MAX_ASSET_TOTAL_BYTES) {
+    if (active.assets.reduce((sum, asset) => sum + asset.size, 0) > MAX_ASSET_TOTAL_BYTES) {
       throw new Error('Biblioteka tablic przekracza łączny limit synchronizacji 500 MiB.');
     }
-    const assets = new Set(data.assets.map(asset => asset.id));
-    for (const board of data.boards) {
+    const assets = new Set(active.assets.map(asset => asset.id));
+    for (const board of active.boards) {
       const references = new Set();
       for (const page of board.project.pages) {
         if (page.background && page.background.assetId) references.add(page.background.assetId);
@@ -256,7 +307,7 @@
     });
     return [...unique.values()];
   }
-  function empty(data) { return Object.values(data.local).every(v => v === null) && (!has(data, 'tasks') || data.tasks === null) &&
+  function empty(data) { return Object.values(data.local).every(v => v === null) &&
     (!has(data, 'boards') || BOARD_STORES.every(name => !data.boards[name].length)); }
   function decide(localHash, cloud, base, localEmpty) {
     if (!cloud.length) return localEmpty ? 'none' : (base ? 'conflict' : 'push');
@@ -272,23 +323,79 @@
   function validateRecord(record, category) {
     const spec = CATEGORIES[category];
     if (!object(record) || record.app !== 'InfoMatyka' || record.schema !== SYNC_SCHEMA || record.category !== category || !spec ||
-        !/^[a-zA-Z0-9-]{8,80}$/.test(record.device || '') || typeof record.deviceName !== 'string' || record.deviceName.length > 60 || !object(record.vector) ||
+        !/^[a-zA-Z0-9-]{8,80}$/.test(record.device || '') || typeof record.deviceName !== 'string' || record.deviceName.length > 60 || !object(record.vector) || !object(record.datasetSchemas) ||
         !Number.isSafeInteger(record.vector[record.device]) || record.vector[record.device] < 1 ||
         Object.keys(record.vector).length > 100 || Object.entries(record.vector).some(([k, v]) => !/^[a-zA-Z0-9-]{8,80}$/.test(k) || !Number.isSafeInteger(v) || v < 1) ||
         !object(record.data) || !object(record.data.local) || !/^[a-f0-9]{64}$/.test(record.hash || '')) {
       throw new Error('Nieobsługiwany lub uszkodzony zapis Drive. Dane lokalne pozostają zachowane.');
     }
-    if (Object.keys(record.data).some(k => !['local', 'tasks', 'boards'].includes(k)) ||
+    if (Object.keys(record.data).some(k => !['local', 'boards'].includes(k)) ||
         Object.keys(record.data.local).length !== spec.keys.length ||
-        spec.keys.some(k => !has(record.data.local, k) || (record.data.local[k] !== null && typeof record.data.local[k] !== 'string')) ||
+        spec.keys.some(k => !has(record.data.local, k) || !DATA_REGISTRY.validate(DATA_REGISTRY.getByKey(k).id, record.data.local[k])) ||
         Object.keys(record.data.local).some(k => !spec.keys.includes(k)) ||
-        (spec.tasks ? !has(record.data, 'tasks') : has(record.data, 'tasks')) ||
+        Object.keys(record.datasetSchemas).length !== spec.datasets.length ||
+        spec.datasets.some(id => record.datasetSchemas[id] !== DATA_REGISTRY.get(id).schema) ||
         (spec.boards ? !has(record.data, 'boards') : has(record.data, 'boards'))) throw new Error('Zapis zawiera nieprawidłowy zakres danych.');
     if (spec.boards) {
       if (record.boardSchema !== BOARD_SCHEMA) throw new Error('Wersja schematu tablic Drive nie jest obsługiwana.');
       validateBoards(record.data.boards);
     } else if (has(record, 'boardSchema')) throw new Error('Zapis zawiera schemat biblioteki poza kategorią tablic.');
     return record;
+  }
+
+  function mergeCategory(base, local, remote, category, now = Date.now) {
+    const spec = CATEGORIES[category], merged = { local: Object.create(null) }, conflicts = [];
+    const stats = { addedLocal: 0, addedRemote: 0, updatedLocal: 0, updatedRemote: 0, deleted: 0, conflicts: 0 };
+    for (const key of spec.keys) {
+      const dataset = DATA_REGISTRY.getByKey(key);
+      const isProgressState = dataset.id === 'progress.state';
+      const baselineSource = object(base.local[key]) ? base.local[key] : null;
+      const xpBaseline = Number(baselineSource && (baselineSource.xpBaseline ?? baselineSource.xp) || 0);
+      const hasProgressStateModel = isProgressState && [base.local[key], local.local[key], remote.local[key]].some(value =>
+        object(value) && (has(value, 'xp') || has(value, 'xpBaseline') || object(value.stats) && has(value.stats, 'totalXp')));
+      const mergeBase = isProgressState ? withoutDerivedProgress(base.local[key]) : base.local[key];
+      const mergeLocal = isProgressState ? withoutDerivedProgress(local.local[key]) : local.local[key];
+      const mergeRemote = isProgressState ? withoutDerivedProgress(remote.local[key]) : remote.local[key];
+      const result = MERGE_CORE.mergeThreeWay(mergeBase, mergeLocal, mergeRemote, {
+        dataset: dataset.id, strategy: dataset.syncStrategy, now
+      });
+      if (hasProgressStateModel && object(result.merged)) result.merged.xpBaseline = xpBaseline;
+      if (!DATA_REGISTRY.validate(dataset.id, result.merged)) {
+        throw new Error('Scalony wynik „' + dataset.label + '” nie przeszedł walidacji.');
+      }
+      merged.local[key] = result.merged;
+      conflicts.push(...result.conflicts.map(conflict => ({ ...conflict, displayPath: conflict.path,
+        path: '/local/' + key + conflict.path })));
+      for (const name of Object.keys(stats)) stats[name] += result.stats[name] || 0;
+    }
+    if (category === 'progress') {
+      const stateKey = DATA_REGISTRY.get('progress.state').key;
+      const eventKey = DATA_REGISTRY.get('progress.events').key;
+      const state = merged.local[stateKey];
+      const progressValues = [base.local[stateKey], local.local[stateKey], remote.local[stateKey]];
+      const hasXpModel = (Array.isArray(merged.local[eventKey]) && merged.local[eventKey].length > 0) ||
+        progressValues.some(value => object(value) && (has(value, 'xp') || has(value, 'xpBaseline') ||
+          object(value.stats) && has(value.stats, 'totalXp')));
+      if (hasXpModel && object(state)) {
+        const baseline = Number(state.xpBaseline) || 0;
+        const events = Array.isArray(merged.local[eventKey]) ? merged.local[eventKey] : [];
+        const xp = baseline + events.reduce((total, event) => total + (Number(event.deltaXp) || 0), 0);
+        state.xp = xp;
+        state.stats = { ...(state.stats || {}), totalXp: xp };
+      }
+    }
+    if (spec.boards) {
+      const emptyBoards = Object.fromEntries(BOARD_STORES.map(name => [name, []]));
+      const result = MERGE_CORE.mergeThreeWay(base.boards || emptyBoards, local.boards || emptyBoards, remote.boards || emptyBoards, {
+        dataset: 'boards.library', strategy: 'nested-entity-three-way', now
+      });
+      validateBoards(result.merged);
+      merged.boards = result.merged;
+      conflicts.push(...result.conflicts);
+      for (const name of Object.keys(stats)) stats[name] += result.stats[name] || 0;
+    }
+    stats.conflicts = conflicts.length;
+    return { merged, conflicts, stats };
   }
 
   class DriveTransport {
@@ -326,7 +433,7 @@
       do {
         const params = new URLSearchParams({ spaces: 'appDataFolder', pageSize: '100',
           fields: 'nextPageToken,files(id,name,size,modifiedTime,version,headRevisionId,appProperties)',
-          q: "trashed = false and appProperties has { key='imSync' and value='v2' } and appProperties has { key='category' and value='" + category + "' }" });
+          q: "trashed = false and appProperties has { key='imSync' and value='v3' } and appProperties has { key='category' and value='" + category + "' }" });
         if (page) params.set('pageToken', page);
         const result = await this.request('drive/v3/files?' + params);
         files.push(...(result.files || [])); page = result.nextPageToken;
@@ -340,7 +447,7 @@
       do {
         const params = new URLSearchParams({ spaces: 'appDataFolder', pageSize: '1000',
           fields: 'nextPageToken,files(id,name,size,mimeType,modifiedTime,version,appProperties)',
-          q: "trashed = false and appProperties has { key='imSync' and value='v2' } and appProperties has { key='type' and value='boardAsset' }" });
+          q: "trashed = false and appProperties has { key='imSync' and value='v3' } and appProperties has { key='type' and value='boardAsset' }" });
         if (page) params.set('pageToken', page);
         const result = await this.request('drive/v3/files?' + params);
         files.push(...(result.files || [])); page = result.nextPageToken;
@@ -353,7 +460,7 @@
       const boundary = 'im_asset_' + asset.sha256.slice(0, 24);
       const metadata = { name: 'infomatyka-board-asset-' + asset.sha256,
         mimeType: asset.mime, parents: ['appDataFolder'], appProperties: {
-          imSync: 'v2', type: 'boardAsset', assetId: asset.id, sha256: asset.sha256, mime: asset.mime
+        imSync: 'v3', type: 'boardAsset', assetId: asset.id, sha256: asset.sha256, mime: asset.mime
         } };
       const body = new Blob([
         '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' + JSON.stringify(metadata) +
@@ -376,9 +483,9 @@
         return;
       }
       const boundary = 'im_' + record.device;
-      const metadata = { name: 'infomatyka-v2-' + record.category + '-' + record.device + '.json',
+      const metadata = { name: 'infomatyka-v3-' + record.category + '-' + record.device + '.json',
         mimeType: 'application/json', parents: ['appDataFolder'],
-        appProperties: { imSync: 'v2', category: record.category, device: record.device } };
+        appProperties: { imSync: 'v3', category: record.category, device: record.device } };
       const body = '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' + JSON.stringify(metadata) +
         '\r\n--' + boundary + '\r\nContent-Type: application/json\r\n\r\n' + content + '\r\n--' + boundary + '--';
       // No automatic POST retry: if the response is lost, the next sync re-lists files.
@@ -389,21 +496,52 @@
 
   class SyncEngine {
     constructor(options) { Object.assign(this, options); }
-    checkpointKey(category) { return 'infomatyka_drive_base_v2_' + this.account + '_' + category; }
+    checkpointKey(category) { return 'infomatyka-sync-checkpoint-' + this.account + '-' + category; }
+    baseKey(datasetId) { return dataBaseKey(this.account, datasetId); }
+    async loadBase(category) {
+      if (!this.bases) return null;
+      const spec = CATEGORIES[category], data = { local: Object.create(null) };
+      for (const datasetId of spec.datasets) {
+        const dataset = DATA_REGISTRY.get(datasetId), stored = await this.bases.getItem(this.baseKey(datasetId));
+        if (!stored || stored.schema !== dataset.schema || !has(stored, 'value')) return null;
+        if (dataset.key) data.local[dataset.key] = stored.value;
+        else if (dataset.id === 'boards.library') data.boards = stored.value;
+      }
+      return data;
+    }
+    async saveBase(category, data, vector, hash) {
+      if (!this.bases) throw new Error('Nie załadowano lokalnego magazynu wspólnej bazy synchronizacji.');
+      const spec = CATEGORIES[category], before = [], writes = [];
+      const durableData = manifestData(data);
+      for (const datasetId of spec.datasets) {
+        const dataset = DATA_REGISTRY.get(datasetId), value = dataset.key ? durableData.local[dataset.key] : durableData.boards;
+        const key = this.baseKey(datasetId);
+        before.push({ key, value: await this.bases.getItem(key) });
+        writes.push({ key, value: { schema: dataset.schema, value } });
+      }
+      try {
+        for (const write of writes) await this.bases.setItem(write.key, write.value);
+        this.storage.setItem(this.checkpointKey(category), JSON.stringify({ hash, vector }));
+      } catch (error) {
+        for (const prior of before.reverse()) {
+          try { if (prior.value === null) await this.bases.removeItem(prior.key); else await this.bases.setItem(prior.key, prior.value); } catch (_) { }
+        }
+        throw new Error('Nie zapisano checkpointu. Kopie baz pozostają niezmienione; ponów synchronizację. ' + error.message);
+      }
+    }
     async capture(category, verifyBoardAssets = false) {
       const data = { local: Object.create(null) }, spec = CATEGORIES[category];
-      spec.keys.forEach(k => { data.local[k] = this.storage.getItem(k); });
-      if (spec.tasks) {
-        if (!this.tasks) throw new Error('Nie załadowano pamięci zadań. Odśwież ustawienia i spróbuj ponownie.');
-        data.tasks = await this.tasks.getItem('generator_baza_zadan');
-        // localForage is canonical; localStorage is the existing generator's fallback.
-        if (data.tasks === null && data.local.generator_baza_zadan !== null) data.tasks = JSON.parse(data.local.generator_baza_zadan);
-        data.local.generator_baza_zadan = null;
+      const base = await this.loadBase(category);
+      for (const key of spec.keys) {
+        const dataset = DATA_REGISTRY.getByKey(key), raw = await DATA_REGISTRY.capture(dataset.id, { storage: this.storage });
+        const value = raw === null ? null : decodeStoredValue({ getItem: () => raw }, key);
+        if (!DATA_REGISTRY.validate(dataset.id, value)) throw new Error('Dane „' + dataset.label + '” nie przechodzą walidacji.');
+        data.local[key] = base && has(base.local, key) ? restoreTombstones(value, base.local[key]) : value;
       }
       if (spec.boards) {
         if (!this.boards) throw new Error('Nie załadowano pamięci tablic.');
         const snapshot = await this.boards.capture(verifyBoardAssets);
-        data.boards = snapshot.data;
+        data.boards = base && base.boards ? restoreTombstones(snapshot.data, base.boards) : snapshot.data;
         data.boardAssetBlobs = snapshot.assetBlobs;
       }
       return data;
@@ -416,10 +554,10 @@
       const copy = { at: new Date().toISOString(), category, reason, data };
       await this.backups.setItem(key, [copy, ...copies].slice(0, 5));
     }
-    async apply(category, incoming, before, backupReason = 'Przed pobraniem z Drive') {
+    async apply(category, incoming, before, backupReason = 'Przed pobraniem z Drive', skipBackup = false) {
       if (this.beforeApply) await this.beforeApply(category);
       // Fail closed if a durable rollback copy cannot be stored (e.g. quota full).
-      await this.backup(category, before, backupReason);
+      if (!skipBackup) await this.backup(category, before, backupReason);
       if (await this.hash(await this.capture(category)) !== await this.hash(before)) throw new Error('Dane zmieniły się podczas pobierania. Spróbuj ponownie.');
       if (this.beforeApply) await this.beforeApply(category);
       if (this.onApplyStart) this.onApplyStart(category);
@@ -427,23 +565,18 @@
       try {
       const spec = CATEGORIES[category];
       const writeLocal = data => spec.keys.forEach(k => {
-        const v = data.local[k]; if (v === null) this.storage.removeItem(k); else this.storage.setItem(k, v);
+        const dataset = DATA_REGISTRY.getByKey(k), value = data.local[k];
+        const serialized = value === null ? null : encodeStoredValue(stripTombstones(value));
+        DATA_REGISTRY.apply(dataset.id, serialized, { storage: this.storage });
       });
       try {
         // Synchronous localStorage part cannot interleave within this tab.
         writeLocal(incoming);
-        if (spec.tasks) {
-          if (incoming.tasks === null) await this.tasks.removeItem('generator_baza_zadan');
-          else await this.tasks.setItem('generator_baza_zadan', incoming.tasks);
-        }
-        if (spec.boards) await this.boards.replace(incoming.boards, before.boards, incoming.boardAssetBlobs);
+        if (spec.boards) await this.boards.replace(projectBoardTombstones(incoming.boards),
+          projectBoardTombstones(before.boards), incoming.boardAssetBlobs);
       } catch (error) {
         try {
           writeLocal(before);
-          if (spec.tasks) {
-            if (before.tasks === null) await this.tasks.removeItem('generator_baza_zadan');
-            else await this.tasks.setItem('generator_baza_zadan', before.tasks);
-          }
         } catch (_) { throw new Error('Pamięć urządzenia jest pełna. Kopia sprzed zmiany pozostaje w „Pobierz kopie lokalne”.'); }
         throw error;
       }
@@ -469,9 +602,31 @@
       const signature = stable(records.map(r => ({ id: r.fileId, hash: r.hash, vector: r.vector, version: r.driveVersion,
         etag: r.etag, modifiedTime: r.savedAt, size: r.fileBytes, headRevisionId: r.headRevisionId || null }))
         .sort((a, b) => a.id.localeCompare(b.id)));
-      let base = null;
-      try { base = JSON.parse(this.storage.getItem(this.checkpointKey(category))); } catch (_) { /* recover with a conflict */ }
-      const action = duplicateDevices.length ? 'conflict' : decide(localHash, cloud, base, empty(local));
+      let checkpoint = null;
+      try { checkpoint = JSON.parse(this.storage.getItem(this.checkpointKey(category))); } catch (_) { /* recover with a conflict */ }
+      const baseData = checkpoint ? await this.loadBase(category) : null;
+      const base = checkpoint ? { ...checkpoint, data: baseData } : null;
+      const baseCorrupt = !!checkpoint && (!baseData || await this.hash(baseData) !== checkpoint.hash);
+      let mergePreview = null, remoteData = null, action;
+      if (duplicateDevices.length || baseCorrupt) action = 'conflict';
+      else if (baseData && cloud.length) {
+        remoteData = manifestData(cloud[0].data);
+        const remoteConflicts = [];
+        for (const record of cloud.slice(1)) {
+          const remoteMerge = mergeCategory(baseData, remoteData, manifestData(record.data), category);
+          remoteData = remoteMerge.merged;
+          remoteConflicts.push(...remoteMerge.conflicts);
+        }
+        mergePreview = mergeCategory(baseData, manifestData(local), remoteData, category);
+        mergePreview.conflicts.unshift(...remoteConflicts);
+        mergePreview.stats.conflicts = mergePreview.conflicts.length;
+        const mergedHash = await this.hash(mergePreview.merged);
+        const remoteHash = await this.hash(remoteData);
+        mergePreview.hash = mergedHash;
+        action = mergePreview.conflicts.length ? 'conflict' :
+          mergedHash === localHash && mergedHash === remoteHash ? 'same' :
+          mergedHash === localHash ? 'push' : mergedHash === remoteHash ? 'pull' : 'merge';
+      } else action = decide(localHash, cloud, base, empty(local));
       const dates = local.boards ? [
         ...local.boards.boardIndex.flatMap(row => [row.updatedAt, row.deletedAt, row.createdAt]),
         ...local.boards.folders.flatMap(row => [row.updatedAt, row.createdAt]),
@@ -479,12 +634,14 @@
       ].filter(value => Number.isFinite(value) && value > 0) : [];
       const savedAt = dates.length ? new Date(Math.max(...dates)).toISOString() : null;
       const vector = mergeClocks([...cloud.map(r => r.vector), ...(base && object(base.vector) ? [base.vector] : [])]);
-      const uploadBytes = byteSize({ app: 'InfoMatyka', schema: SYNC_SCHEMA, ...(CATEGORIES[category].boards ? { boardSchema: BOARD_SCHEMA } : {}), category, device: this.device,
-        updatedAt: new Date().toISOString(), vector, hash: localHash, data: manifestData(local) });
-      const localCounts = local.boards ? { boards: local.boards.boardIndex.filter(row => !row.deletedAt).length,
-        folders: local.boards.folders.length, assets: local.boards.assets.length,
-        assetBytes: local.boards.assets.reduce((sum, asset) => sum + asset.size, 0) } : null;
-      return { category, action, local, localHash, signature, cloud, files, base, duplicateDevices, fileCount: files.length,
+      const uploadBytes = byteSize({ app: 'InfoMatyka', schema: SYNC_SCHEMA, ...(CATEGORIES[category].boards ? { boardSchema: BOARD_SCHEMA } : {}),
+        category, datasetSchemas: Object.fromEntries(CATEGORIES[category].datasets.map(id => [id, DATA_REGISTRY.get(id).schema])), device: this.device,
+        updatedAt: new Date().toISOString(), vector, hash: mergePreview ? mergePreview.hash : localHash, data: manifestData(mergePreview ? mergePreview.merged : local) });
+      const localCounts = local.boards ? { boards: local.boards.boardIndex.filter(row => !row.deletedAt && !isDeletedRow(row)).length,
+        folders: local.boards.folders.filter(row => !isDeletedRow(row)).length,
+        assets: local.boards.assets.filter(row => !isDeletedRow(row)).length,
+        assetBytes: local.boards.assets.reduce((sum, asset) => sum + (isDeletedRow(asset) ? 0 : asset.size), 0) } : null;
+      return { category, action, local, localHash, signature, cloud, files, base, mergePreview, remoteData, duplicateDevices, fileCount: files.length,
         localVersion: { bytes: byteSize(local), uploadBytes, savedAt, empty: empty(local), counts: localCounts,
           device: this.device, vector: base && object(base.vector) ? base.vector : { [this.device]: 0 } } };
     }
@@ -495,16 +652,20 @@
       }
       return latest;
     }
-    async prepareBoardAssets(data, onProgress) {
+    async prepareBoardAssets(data, onProgress, preferredBlobs = []) {
       if (!data.boards) return data;
       const files = await this.transport.listBoardAssets(), blobs = [];
+      const localBlobs = new Map(preferredBlobs.map(item => [item.id, item.blob]));
       let totalBytes = 0;
-      for (let index = 0; index < data.boards.assets.length; index++) {
-        const asset = data.boards.assets[index];
+      const activeAssets = data.boards.assets.filter(asset => !isDeletedRow(asset));
+      for (let index = 0; index < activeAssets.length; index++) {
+        const asset = activeAssets[index];
+        let verified = null;
+        const localBlob = localBlobs.get(asset.id);
+        if (localBlob && await validateAssetBlob(asset, localBlob, this.crypto)) verified = localBlob;
         const matches = files.filter(candidate => candidate.appProperties.sha256 === asset.sha256 &&
           candidate.appProperties.mime === asset.mime && Number(candidate.size) === asset.size);
-        let verified = null;
-        for (const file of matches) {
+        for (const file of verified ? [] : matches) {
           const blob = await this.transport.readAsset(file);
           if (await validateAssetBlob(asset, blob, this.crypto)) { verified = blob; break; }
         }
@@ -514,7 +675,7 @@
         totalBytes += verified.size;
         if (totalBytes > MAX_ASSET_TOTAL_BYTES) throw new Error('Pobrane materiały przekraczają łączny limit 500 MiB. Lokalne dane nie zostały zmienione.');
         blobs.push({ id: asset.id, blob: verified });
-        if (onProgress) onProgress('Pobieranie assetów', index + 1, data.boards.assets.length);
+        if (onProgress) onProgress('Pobieranie assetów', index + 1, activeAssets.length);
       }
       return { ...data, boardAssetBlobs: blobs };
     }
@@ -522,8 +683,9 @@
       if (!data.boards) return;
       const blobs = new Map((data.boardAssetBlobs || []).map(item => [item.id, item.blob]));
       const remoteFiles = await this.transport.listBoardAssets();
-      for (let index = 0; index < data.boards.assets.length; index++) {
-        const asset = data.boards.assets[index], blob = blobs.get(asset.id);
+      const activeAssets = data.boards.assets.filter(asset => !isDeletedRow(asset));
+      for (let index = 0; index < activeAssets.length; index++) {
+        const asset = activeAssets[index], blob = blobs.get(asset.id);
         if (!(blob instanceof Blob) || blob.size !== asset.size || blob.type !== asset.mime || await blobHash(blob, this.crypto) !== asset.sha256) {
           throw new Error('Zasób biblioteki zmienił się po porównaniu. Nie wysłano manifestu.');
         }
@@ -532,62 +694,76 @@
           file.appProperties.mime === asset.mime && Number(file.size) === asset.size);
         for (const file of matches) if (await validateAssetBlob(asset, await this.transport.readAsset(file), this.crypto)) { present = true; break; }
         if (!present) remoteFiles.push(await this.transport.writeAsset(asset, blob));
-        if (onProgress) onProgress('Wysyłanie assetów', index + 1, data.boards.assets.length);
+        if (onProgress) onProgress('Wysyłanie assetów', index + 1, activeAssets.length);
       }
     }
     async sync(category, resolution) {
       const review = await this.inspect(category, { verifyBoardAssets: true });
       const { local, localHash, files, cloud, signature, base } = review;
       if (review.duplicateDevices.length) return { ...review, action: 'conflict' };
-      let action = review.action;
-      let chosen;
-      // A decision applies only to the versions the user actually reviewed.
-      if (!resolution && !['same', 'none'].includes(action)) return { ...review, action: 'conflict' };
-      if (resolution && (resolution.signature !== signature || resolution.localHash !== localHash)) action = 'conflict';
-      if (resolution && resolution.signature === signature && resolution.localHash === localHash) {
-        if (resolution.source === 'local') action = 'push';
-        else {
-          chosen = cloud.find(r => r.fileId === resolution.source);
-          action = chosen ? 'pull' : 'conflict';
-        }
+      if (!resolution) return review;
+      if (resolution.signature !== signature || resolution.localHash !== localHash) return { ...review, action: 'conflict' };
+      const source = resolution.source;
+      if (!['merge', 'resolve', 'local', 'cloud'].includes(source)) return { ...review, action: 'conflict' };
+      if (source === 'merge' && ((review.mergePreview && review.mergePreview.conflicts.length) ||
+          (!review.mergePreview && !['push', 'pull'].includes(review.action)) || ['same', 'none', 'conflict'].includes(review.action))) {
+        return { ...review, action: 'conflict' };
       }
-      if (action === 'conflict') return { ...review, action };
-      if (action === 'none') return { category, action };
+      if (source === 'resolve' && (!review.mergePreview || !review.mergePreview.conflicts.length)) return { ...review, action: 'conflict' };
+      if (source === 'local' && !['push', 'merge', 'conflict'].includes(review.action)) return { ...review, action: 'conflict' };
+      if (source === 'cloud' && !cloud.length) return { ...review, action: 'conflict' };
+      if (review.action === 'same' || review.action === 'none') return { category, action: review.action };
+
+      let action = source === 'merge' ? review.action : source === 'resolve' ? 'merge' : source === 'local' ? 'push' : 'pull';
+      const chosen = source === 'cloud' ? cloud.find(record => record.fileId === resolution.fileId) :
+        action === 'pull' ? cloud[0] : null;
+      if (source === 'cloud' && !chosen) return { ...review, action: 'conflict' };
       const ownFile = files.find(file => file.appProperties.device === this.device);
       const ownFiles = ownFile ? [ownFile] : [];
-      if (action === 'push' && !ownFiles.length && files.length >= MAX_FILES) throw new Error('Osiągnięto limit 100 plików urządzeń. Nowe urządzenie nie może dodać zapisu w tej kategorii.');
+      if (action !== 'pull' && !ownFiles.length && files.length >= MAX_FILES) throw new Error('Osiągnięto limit 100 plików urządzeń. Nowe urządzenie nie może dodać zapisu w tej kategorii.');
       if (await this.hash(await this.capture(category)) !== localHash) throw new Error('Dane lokalne zmieniły się w trakcie synchronizacji. Spróbuj ponownie.');
-      chosen = chosen || cloud[0];
       let vector = mergeClocks([...cloud.map(r => r.vector), ...(base && object(base.vector) ? [base.vector] : [])]);
-      if (action === 'pull') vector = { ...chosen.vector };
-      const nextHash = action === 'pull' ? chosen.hash : localHash;
-      let record;
-      if (action === 'push') {
+      let incoming;
+      let mergeResult = review.mergePreview;
+      if (source === 'resolve') mergeResult = MERGE_CORE.resolveConflicts(review.mergePreview, resolution.choices);
+      if ((source === 'merge' || source === 'resolve') && mergeResult) {
+        incoming = { ...manifestData(mergeResult.merged), boardAssetBlobs: local.boardAssetBlobs || [] };
+        incoming = await this.prepareBoardAssets(incoming, this.onProgress, local.boardAssetBlobs || []);
+      } else if (action === 'pull') {
+        incoming = await this.prepareBoardAssets(chosen.data, this.onProgress);
+        vector = { ...chosen.vector };
+      } else incoming = local;
+
+      const nextHash = await this.hash(incoming);
+      if (source !== 'merge' && action === 'push') {
+        for (const remote of cloud) await this.backup(category, await this.prepareBoardAssets(remote.data), 'Google Drive przed wysłaniem wersji lokalnej');
+      }
+      await this.backup(category, local, 'Dane lokalne przed synchronizacją');
+      if (source === 'merge') {
+        for (const remote of cloud) await this.backup(category, await this.prepareBoardAssets(remote.data, null, local.boardAssetBlobs || []), 'Google Drive przed merge');
+      }
+      await this.assertReviewUnchanged(review);
+
+      if (action !== 'pull') {
         vector[this.device] = (vector[this.device] || 0) + 1;
-        record = { app: 'InfoMatyka', schema: SYNC_SCHEMA, ...(CATEGORIES[category].boards ? { boardSchema: BOARD_SCHEMA } : {}), category, device: this.device,
-          deviceName: this.deviceName || ('Urządzenie ' + this.device.slice(-4)),
-          updatedAt: new Date().toISOString(), vector, hash: nextHash, data: manifestData(local) };
+        const record = { app: 'InfoMatyka', schema: SYNC_SCHEMA,
+          ...(CATEGORIES[category].boards ? { boardSchema: BOARD_SCHEMA } : {}), category,
+          datasetSchemas: Object.fromEntries(CATEGORIES[category].datasets.map(id => [id, DATA_REGISTRY.get(id).schema])),
+          device: this.device, deviceName: this.deviceName || ('Urządzenie ' + this.device.slice(-4)),
+          updatedAt: new Date().toISOString(), vector, hash: nextHash, data: manifestData(incoming) };
         validateRecord(record, category);
         if (byteSize(record) > MAX_BYTES) throw new Error('Zapis wraz z opisem przekracza limit 8 MiB. Zmniejsz dane lub załączniki.');
-      }
-      if (resolution && action === 'push') {
-        for (const record of cloud) await this.backup(category, await this.prepareBoardAssets(record.data), 'Google Drive przed wysłaniem wersji lokalnej');
-        await this.backup(category, local, 'Lokalnie przed wysłaniem na Drive');
-      }
-      if (action === 'pull') {
-        if (chosen.data.boards && this.onProgress) this.onProgress('Przygotowywanie biblioteki…', 0, 0);
-        const incoming = await this.prepareBoardAssets(chosen.data, this.onProgress);
-        await this.assertReviewUnchanged(review);
-        await this.apply(category, incoming, local, 'Lokalnie przed pobraniem z Drive');
-      }
-      if (action === 'push') {
-        if (local.boards && this.onProgress) this.onProgress('Przygotowywanie biblioteki…', 0, 0);
-        await this.uploadBoardAssets(local, this.onProgress);
+        await this.uploadBoardAssets(incoming, this.onProgress);
         await this.assertReviewUnchanged(review);
         if (this.onProgress) this.onProgress('Zapisywanie manifestu…', 0, 0);
         await this.transport.write(record, ownFiles);
       }
-      this.storage.setItem(this.checkpointKey(category), JSON.stringify({ hash: nextHash, vector }));
+      await this.apply(category, incoming, local, 'Lokalnie przed zastosowaniem połączonego wyniku', true);
+      await this.saveBase(category, incoming, vector, nextHash);
+      const after = await this.inspect(category);
+      if (!['same', 'none'].includes(after.action)) {
+        throw new Error('Drive zmienił się w trakcie zatwierdzania. Zachowano kopię lokalną; ponownie sprawdź i połącz aktualne wersje.');
+      }
       return { category, action };
     }
     async keepBothBoards(review, remoteRecord) {
@@ -602,12 +778,14 @@
   // Export the actual engine for deterministic integration tests, without initializing browser UI.
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = { MODULE_VERSION, SYNC_SCHEMA, BOARD_SCHEMA, BOARD_DB_VERSION, CATEGORIES, SyncEngine, BoardStore, DriveTransport, MAX_BYTES, MAX_FILES,
-      byteSize, stable, digest, dominates, mergeClocks, heads, decide, validateRecord, makeRecoveryArchive, readRecoveryArchive }; return;
+      DATA_REGISTRY, MERGE_CORE, byteSize, stable, digest, dominates, mergeClocks, heads, decide, mergeCategory, validateRecord,
+      projectBoardTombstones,
+      makeRecoveryArchive, readRecoveryArchive }; return;
   }
 
-  const SESSION_KEY = 'infomatyka_drive_session_v1';
-  const EDIT_PREFIX = 'infomatyka_drive_edit_v2_';
-  const HYDRATION_PREFIX = 'infomatyka_drive_hydration_v2_';
+  const SESSION_KEY = 'infomatyka-sync-session';
+  const EDIT_PREFIX = 'infomatyka-sync-edit-';
+  const HYDRATION_PREFIX = 'infomatyka-sync-hydration-';
   const tabId = root.crypto.randomUUID ? root.crypto.randomUUID() : 'tab-' + Date.now() + '-' + Math.random().toString(36).slice(2);
   const keyCategory = new Map(Object.entries(CATEGORIES).flatMap(([category, spec]) => spec.keys.map(key => [key, category])));
   const internalWrites = new Set(), loadedEpochs = Object.create(null), previousEpochs = Object.create(null);
@@ -617,40 +795,32 @@
   let sessionRequest = null, connectionChannel = null;
   const GROUPS = [
     { label: 'Konto i postępy', detail: 'Profil, dostępność, XP, odznaki, nauka i ulubione', categories: ['profile', 'progress', 'learning', 'favorites'] },
-    { label: 'Generator', detail: 'Zestawy, zadania i zapisane materiały', categories: ['generator'] },
-    { label: 'Klasy i kalendarz', detail: 'Uczniowie, lekcje, oceny i raporty', categories: ['teacher'] },
+    { label: 'Generator i materiały', detail: 'Zestawy, własne zadania, projekty i materiały', categories: ['generator', 'materials'] },
+    { label: 'Klasy i planowanie', detail: 'Dziennik, organizacja miejsc, raporty, wydarzenia, dyżury i dostosowania SPE', categories: ['teacher', 'organizer', 'calendar', 'duty', 'spe'] },
     { label: 'Tablice interaktywne', detail: 'Tablice, obrazy, foldery i powiązania', categories: ['boards'] }
   ];
   let token = null, account = null, ready = false, busy = false, authorizing = false, client = null, gisPromise = null;
-  let engine, backupStore, comparisons = [], recovery = [], panel, notice = '', upgradeNotice = '', applied = false, afterAuth = null, pendingDirection = null;
+  let engine, backupStore, baseStore, comparisons = [], recovery = [], panel, notice = '', upgradeNotice = '', applied = false, afterAuth = null, pendingDirection = null;
   let recoveryAccountSelection = '';
   let progressMessage = '';
   let cloudChoices = Object.create(null);
-  let prefs = { selected: Object.keys(CATEGORIES), selectionVersion: 2, syncMode: 'check-only', connectionActive: true, boundAccount: '', accountEmail: '', lastCheckAt: '' };
-  let migratedLegacyBackground = false;
+  let conflictChoices = Object.create(null);
+  let prefs = { selected: Object.keys(CATEGORIES), selectionVersion: 3, syncMode: 'check-only', connectionActive: true, boundAccount: '', accountEmail: '', lastCheckAt: '' };
   try {
     const current = root.localStorage.getItem(SETTINGS_KEY);
-    const stored = JSON.parse(current || root.localStorage.getItem(LEGACY_SETTINGS_KEY) || '{}');
-    if (!current && has(stored, 'background')) {
-      prefs.syncMode = stored.background === true ? 'check-only' : 'manual';
-      migratedLegacyBackground = true;
-    }
+    const stored = JSON.parse(current || '{}');
     const { background, automatic, fetchLatest, lastSync, ...savedPreferences } = stored;
     prefs = { ...prefs, ...savedPreferences, syncMode: ['manual', 'check-only'].includes(savedPreferences.syncMode) ? savedPreferences.syncMode : prefs.syncMode };
-    if (stored.selectionVersion !== 2) prefs.selected = Object.keys(CATEGORIES);
-    prefs.selectionVersion = 2;
+    if (stored.selectionVersion !== 3) prefs.selected = Object.keys(CATEGORIES);
+    prefs.selectionVersion = 3;
   } catch (_) { }
   prefs.selected = Array.isArray(prefs.selected) ? prefs.selected.filter(k => has(CATEGORIES, k)) : Object.keys(CATEGORIES);
-  if (migratedLegacyBackground) root.localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...prefs, preferenceSchema: 2 }));
-  if (migratedLegacyBackground) {
-    upgradeNotice = 'Synchronizacja Google Drive została zaktualizowana. Automatyczne sprawdzanie zmian pozostaje włączone, ale przesyłanie lub pobieranie danych wymagające zmiany lokalnego albo chmurowego stanu wymaga teraz Twojej decyzji.';
-    notice = upgradeNotice;
-  }
+  prefs.selectionVersion = 3;
   const config = root.InfoMatykaDriveConfig || {};
   const configured = typeof config.clientId === 'string' && /^[\w-]+\.apps\.googleusercontent\.com$/.test(config.clientId);
   const connected = () => !!token && Date.now() < token.expiresAt && !!account;
-  function savePrefs() { prefs.preferenceSchema = 2; root.localStorage.setItem(SETTINGS_KEY, JSON.stringify(prefs)); }
-  function categoryStateKey(category) { return STATE_PREFIX + (prefs.boundAccount || 'unbound') + '_' + category; }
+  function savePrefs() { prefs.preferenceSchema = 3; root.localStorage.setItem(SETTINGS_KEY, JSON.stringify(prefs)); }
+  function categoryStateKey(category) { return STATE_PREFIX + (prefs.boundAccount || 'unbound') + '-' + category; }
   function categoryState(category) {
     const defaults = { localDirty: false, remoteChanged: false, lastSyncedHash: null, lastSyncedVector: null,
       lastRemoteVersion: null, lastSuccessfulSyncAt: null, lastCheckedAt: null, lastLocalChangeAt: null };
@@ -692,9 +862,15 @@
   }
   function getBackupStore() {
     if (!backupStore && root.localforage && root.localforage.createInstance) {
-      backupStore = root.localforage.createInstance({ name: 'infomatyka_drive_recovery_v2', storeName: 'copies' });
+      backupStore = root.localforage.createInstance({ name: 'infomatyka-sync-recovery', storeName: 'copies' });
     }
     return backupStore;
+  }
+  function getBaseStore() {
+    if (!baseStore && root.localforage && root.localforage.createInstance) {
+      baseStore = root.localforage.createInstance({ name: BASE_STORE_NAME, storeName: 'datasets' });
+    }
+    return baseStore;
   }
   function notifyBoardsChanged() {
     root.dispatchEvent(new Event('infomatyka-boards-changed'));
@@ -734,7 +910,8 @@
     const device = root.localStorage.getItem(DEVICE_KEY) || root.crypto.randomUUID();
     root.localStorage.setItem(DEVICE_KEY, device);
     backupStore = getBackupStore();
-    engine = new SyncEngine({ storage: root.localStorage, tasks: root.localforage, backups: backupStore,
+    baseStore = getBaseStore();
+    engine = new SyncEngine({ storage: root.localStorage, bases: baseStore, backups: backupStore,
       boards: new BoardStore(root.indexedDB, root.crypto, notifyBoardsChanged), crypto: root.crypto, transport, device, deviceName: prefs.deviceName || '', account: user.permissionId,
       beforeApply: () => {
         if (!prefs.connectionActive || !connected() || account.permissionId !== user.permissionId) {
@@ -894,7 +1071,7 @@
     if (root.localforage) ['setItem', 'removeItem'].forEach(method => {
       const original = root.localforage[method]; if (typeof original !== 'function') return;
       root.localforage[method] = function (key, ...args) {
-        const tracked = key === 'generator_baza_zadan' && !internalWrites.has('generator');
+        const tracked = key === 'infomatyka-generator-task-cache' && !internalWrites.has('generator');
         if (tracked) guardWrite('generator');
         const result = original.call(this, key, ...args);
         if (tracked && result && result.then) result.then(() => localChanged('generator'), () => {});
@@ -1040,7 +1217,9 @@
             comparisons = fresh; cloudChoices = Object.create(null);
             notice = 'Dane zmieniły się od czasu porównania. Sprawdź aktualne różnice i wybierz ponownie.'; return;
           }
-          const changes = fresh.filter(differs).filter(review => source === 'local' || review.cloud.length);
+          const changes = fresh.filter(review => source === 'merge' ? differs(review) && !review.mergePreview?.conflicts.length && review.action !== 'conflict' :
+            source === 'resolve' ? review.action === 'conflict' && (review.mergePreview?.conflicts || []).every(conflict => conflictChoices[review.category + ':' + conflict.dataset + ':' + conflict.path]) :
+            review.action === 'conflict');
           if (source === 'cloud' && changes.some(review => !chosenCloud(review))) {
             comparisons = fresh; notice = 'Wybierz wersję Drive w kategoriach z równoległymi zmianami.'; return;
           }
@@ -1049,21 +1228,28 @@
             try {
               const result = await engine.sync(review.category, {
                 signature: review.signature, localHash: review.localHash,
-                source: source === 'local' ? 'local' : chosenCloud(review).fileId
+                source: source === 'merge' ? 'merge' : source === 'local' ? 'local' : 'cloud',
+                ...(source === 'cloud' ? { fileId: chosenCloud(review).fileId } : {}),
+                ...(source === 'resolve' ? { source: 'resolve', choices: Object.fromEntries((review.mergePreview?.conflicts || []).map(conflict => [
+                  conflict.dataset + ':' + conflict.path, conflictChoices[review.category + ':' + conflict.dataset + ':' + conflict.path]
+                ])) } : {})
               });
               if (result.action === 'conflict') stale = true;
-              else if (['push', 'pull'].includes(result.action)) recordSuccessfulSync(review, result, chosenCloud(review));
+              else if (!['same', 'none'].includes(result.action)) recordSuccessfulSync(review, result, chosenCloud(review));
             } catch (error) { failures.push(CATEGORIES[review.category].label + ': ' + error.message); }
           }
           comparisons = failures.length || stale ? await inspectAll(selected) : [];
           cloudChoices = Object.create(null);
           notice = failures.length ? 'Nie udało się zakończyć wszystkich zmian. ' + failures.join(' ') : stale ?
-            'Część danych zmieniła się podczas synchronizacji. Sprawdź nowe porównanie.' :
-            source === 'local' ? 'Zapisano wybrane dane lokalne na Google Drive.' : 'Wczytano dostępne dane z Google Drive. Kategorie bez kopii na Drive pozostają bez zmian.';
+            'Część danych zmieniła się podczas synchronizacji. Sprawdź nowe porównanie.' : source === 'merge' ?
+            'Połączono bezpieczne zmiany. Konflikty pozostały bez zmian.' :
+            source === 'resolve' ? 'Zastosowano wybrane wartości. Lokalne i Drive wersje sprzed zmiany zachowano w recovery.' :
+            source === 'local' ? 'Zachowano wybrane lokalne wersje konfliktowych kategorii.' : 'Zachowano wybrane wersje Drive dla konfliktowych kategorii.';
         } else {
           comparisons = fresh; cloudChoices = Object.create(null);
+          const conflictCount = comparisons.reduce((sum, review) => sum + (review.mergePreview?.conflicts.length || 0), 0);
           notice = comparisons.some(review => review.error) ? 'Nie udało się porównać wszystkich danych. Szczegóły poniżej.' : comparisons.some(differs) ?
-            'Dane różnią się. Wybierz zapis wersji lokalnej albo wczytanie wersji z Drive.' : 'Dane są zgodne; nie trzeba niczego nadpisywać.';
+            'Sprawdzenie ukończone. Bezpieczne zmiany można połączyć; wykryto ' + conflictCount + ' konfliktów wymagających decyzji.' : 'Dane są zgodne; nie trzeba niczego nadpisywać.';
         }
         prefs = { ...prefs, ...JSON.parse(root.localStorage.getItem(SETTINGS_KEY) || '{}'), lastCheckAt: new Date().toISOString() };
         prefs.reviewPending = comparisons.some(review => review.error || differs(review));
@@ -1193,7 +1379,7 @@
   function createRecoveryEngine(accountId) {
     const store = getBackupStore();
     const device = root.localStorage.getItem(DEVICE_KEY) || root.crypto.randomUUID();
-    return new SyncEngine({ storage: root.localStorage, tasks: root.localforage, backups: store,
+    return new SyncEngine({ storage: root.localStorage, bases: getBaseStore(), backups: store,
       boards: new BoardStore(root.indexedDB, root.crypto, notifyBoardsChanged), crypto: root.crypto, transport,
       device, deviceName: prefs.deviceName || '', account: accountId, beforeApply: category => {
         if (category === 'boards' && (pageEdited || otherPageEditing())) throw new Error('Zamknij lub zapisz edycję tablic na innych kartach przed przywróceniem kopii.');
@@ -1268,6 +1454,25 @@
   function formatBytes(bytes) {
     return bytes < 1024 ? bytes + ' B' : (bytes / (bytes < 1024 * 1024 ? 1024 : 1024 * 1024)).toLocaleString('pl-PL', { maximumFractionDigits: 2 }) + (bytes < 1024 * 1024 ? ' KiB' : ' MiB');
   }
+  function conflictPathLabel(conflict) {
+    const labels = { name: 'nazwa', title: 'tytuł', note: 'notatka', color: 'kolor', text: 'treść', content: 'treść',
+      date: 'data', startTime: 'godzina rozpoczęcia', endTime: 'godzina zakończenia', order: 'kolejność', grade: 'ocena' };
+    const parts = (conflict.displayPath || conflict.path).split('/').filter(Boolean).map(part => part.replace(/~1/g, '/').replace(/~0/g, '~'));
+    const field = parts[parts.length - 1] || 'cały wpis';
+    const entity = parts.length > 1 ? parts[parts.length - 2] : '';
+    return (entity ? entity + ' · ' : '') + (labels[field] || field);
+  }
+  function conflictValueSummary(value, present) {
+    if (!present) return 'Wartość została usunięta';
+    if (value === null) return 'Brak wartości';
+    if (['string', 'number', 'boolean'].includes(typeof value)) return String(value);
+    if (Array.isArray(value)) return value.length + ' elementów';
+    if (object(value)) {
+      const field = ['name', 'title', 'text', 'content', 'note', 'value'].find(key => typeof value[key] === 'string' || typeof value[key] === 'number');
+      return field ? String(value[field]) : 'Zmieniony wpis';
+    }
+    return 'Brak wartości';
+  }
   function formatDate(value) { return value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString('pl-PL') : 'Data zapisu nieznana'; }
   function latestDate(values) { return values.filter(value => Number.isFinite(Date.parse(value))).sort((a, b) => Date.parse(b) - Date.parse(a))[0]; }
   function confirmDirection(source) {
@@ -1333,7 +1538,13 @@
         text('p', 'Drive version: ' + (cloudBoard.driveVersion || 'brak') + ' · vector clock: ' + JSON.stringify(cloudBoard.vector)));
     }
     versions.append(localCard, cloudCard); box.append(versions);
-    box.append(text('p', different.length ? 'Różnią się: ' + different.map(review => CATEGORIES[review.category].label).join(' · ') : 'Wersje są zgodne; nadpisanie nie jest potrzebne.', 'im-drive-help'));
+    const safeChanges = different.filter(review => ['push', 'pull', 'merge'].includes(review.action) && !review.mergePreview?.conflicts.length);
+    const conflictReviews = different.filter(review => review.action === 'conflict' && review.mergePreview?.conflicts.length);
+    const conflictCount = conflictReviews.reduce((sum, review) => sum + review.mergePreview.conflicts.length, 0);
+    box.append(text('p', safeChanges.length ? 'Gotowe do połączenia: ' + safeChanges.map(review => CATEGORIES[review.category].label +
+      (review.mergePreview ? ' · ' + (review.mergePreview.stats.addedLocal + review.mergePreview.stats.addedRemote + review.mergePreview.stats.deleted) + ' zmian' : '')).join(' · ') :
+      different.length ? 'Są zmiany wymagające sprawdzenia.' : 'Wersje są zgodne; nie trzeba niczego nadpisywać.', 'im-drive-help'));
+    if (conflictCount) box.append(text('p', 'Konflikty: ' + conflictCount + ' pól wymagają decyzji. Zmiany lokalne i Drive są pokazane osobno; obie wersje zostaną zapisane w kopiach odzyskiwania przed zastosowaniem wyboru.', 'im-drive-status'));
     const detail = text('details', '', 'im-drive-details'); detail.append(text('summary', 'Szczegóły różnic i dat'));
     comparisons.forEach(review => {
       if (review.error) { detail.append(text('p', CATEGORIES[review.category].label + ': ' + review.error, 'im-drive-status')); return; }
@@ -1348,6 +1559,24 @@
           ' · ostatnie sprawdzenie ' + (state.lastCheckedAt ? formatDate(state.lastCheckedAt) : 'brak') +
           ' · ostatnia udana synchronizacja ' + (state.lastSuccessfulSyncAt ? formatDate(state.lastSuccessfulSyncAt) : 'brak')));
       detail.append(row);
+      if (review.mergePreview) {
+        review.mergePreview.conflicts.forEach(conflict => {
+          const dataset = DATA_REGISTRY.get(conflict.dataset), key = review.category + ':' + conflict.dataset + ':' + conflict.path;
+          const item = text('div', '', 'im-drive-diff-row');
+          item.append(text('strong', (dataset ? dataset.label : conflict.dataset) + ' · ' + conflictPathLabel(conflict)),
+            text('span', 'Wspólna baza: ' + conflictValueSummary(conflict.base, conflict.basePresent)),
+            text('span', 'To urządzenie: ' + conflictValueSummary(conflict.local, conflict.localPresent)),
+            text('span', 'Google Drive: ' + conflictValueSummary(conflict.remote, conflict.remotePresent)));
+          const choice = document.createElement('select'); choice.disabled = busy;
+          const blank = text('option', 'Wybierz wersję zachowaną'); blank.value = ''; choice.append(blank);
+          [['local', 'Zachowaj to urządzenie'], ['remote', 'Zachowaj Google Drive'], ['base', 'Przywróć wspólną bazę']].forEach(([value, label]) => {
+            const option = text('option', label); option.value = value; choice.append(option);
+          });
+          choice.value = conflictChoices[key] || '';
+          choice.addEventListener('change', () => { if (choice.value) conflictChoices[key] = choice.value; else delete conflictChoices[key]; render(); });
+          item.append(choice); detail.append(item);
+        });
+      }
     }); box.append(detail);
     valid.filter(review => new Set(review.cloud.map(record => record.hash)).size > 1).forEach(review => {
       const label = text('label', 'Równoległe wersje: ' + CATEGORIES[review.category].label, 'im-drive-cloud-choice');
@@ -1356,17 +1585,20 @@
       review.cloud.forEach(record => { const option = text('option', formatDate(record.savedAt) + ' · ' + formatBytes(record.bytes) + ' · urządzenie ' + record.device.slice(0, 8)); option.value = record.fileId; select.append(option); });
       select.value = cloudChoices[review.category] || ''; select.addEventListener('change', () => { cloudChoices[review.category] = select.value; render(); }); label.append(select); box.append(label);
     });
-    const hasErrors = comparisons.some(review => review.error), needsCloud = different.filter(review => review.cloud.length);
+    const hasErrors = comparisons.some(review => review.error), needsCloud = different.filter(review => review.action === 'conflict' && review.cloud.length);
     if (different.some(review => review.localVersion.uploadBytes > MAX_BYTES)) box.append(text('p', 'Część danych przekracza limit zapisu. Szczegóły są w sekcji „Limity i kopie zapasowe”. Możesz wczytać mniejszą wersję z Drive.', 'im-drive-status'));
     if (different.length) {
       const actions = text('div', '', 'im-drive-actions');
-      const duplicateHeads = different.some(review => review.duplicateDevices.length);
-      actions.append(button('Wyślij wersję lokalną na Google Drive', () => confirmDirection('local'), hasErrors || duplicateHeads || different.some(review => review.localVersion.uploadBytes > MAX_BYTES)),
-        button('Pobierz wersję z Google Drive', () => confirmDirection('cloud'), hasErrors || duplicateHeads || !needsCloud.length || needsCloud.some(review => !chosenCloud(review))));
-      const boardsReview = different.find(review => review.category === 'boards' && review.cloud.length);
+      if (safeChanges.length) actions.append(button('Połącz bezpieczne zmiany (' + safeChanges.length + ')', () => synchronize('merge'),
+        hasErrors || safeChanges.some(review => review.localVersion.uploadBytes > MAX_BYTES)));
+      const unresolvedConflicts = conflictReviews.some(review => review.mergePreview.conflicts.some(conflict =>
+        !conflictChoices[review.category + ':' + conflict.dataset + ':' + conflict.path]));
+      if (conflictReviews.length) actions.append(button('Zastosuj wybrane rozstrzygnięcia (' + conflictCount + ')', () => synchronize('resolve'),
+        hasErrors || unresolvedConflicts || conflictReviews.some(review => review.duplicateDevices.length || review.localVersion.uploadBytes > MAX_BYTES)));
+      const boardsReview = different.find(review => review.category === 'boards' && review.action === 'conflict' && review.cloud.length);
       if (boardsReview) actions.append(button('Zachowaj obie wersje', keepBothBoards,
         hasErrors || boardsReview.duplicateDevices.length > 0 || (new Set(boardsReview.cloud.map(record => record.hash)).size > 1 && !chosenCloud(boardsReview))));
-      box.append(actions, text('p', 'Każda zmiana wymaga Twojego wyboru. Przed zastąpieniem danych zostanie utworzona kopia bezpieczeństwa.', 'im-drive-help'));
+      box.append(actions, text('p', 'Sprawdzenie jest tylko do odczytu. Bezpieczne połączenie wymaga kliknięcia; rozstrzygnięcia zapisują kopie lokalne i Drive przed zmianą.', 'im-drive-help'));
     }
     if (pendingDirection) box.append(renderDirectionConfirmation());
     return box;
@@ -1429,7 +1661,29 @@
     recovery.forEach(copy => advanced.append(button('Przywróć: ' + CATEGORIES[copy.category].label + ' · ' + formatDate(copy.at) + ' · ' + (copy.reason || 'kopia lokalna') + ' · ' + formatBytes(byteSize(copy.data)), () => restoreCopy(copy), false, 'im-drive-secondary')));
     panel.append(advanced); if (recovery.length) advanced.open = true;
   }
-  root.InfoMatykaDrive = { version: MODULE_VERSION, categories: CATEGORIES, synchronize: () => synchronize(), syncInBackground, disconnect, isConnected: connected, guardBoardWrite,
+  async function getDiagnostics() {
+    const reviews = new Map();
+    if (engine && connected()) {
+      await Promise.all(Object.keys(CATEGORIES).map(async category => {
+        try { reviews.set(category, await engine.inspect(category)); } catch (_) { }
+      }));
+    }
+    const countEntities = value => Array.isArray(value) ? value.length : object(value) ? Object.values(value).reduce((sum, item) => sum + (Array.isArray(item) ? item.length : 0), 0) : 0;
+    const hashValue = async value => value === undefined ? null : digest(value, root.crypto, false);
+    return DATA_REGISTRY.getDiagnostics().map(async datasetInfo => {
+      const dataset = DATA_REGISTRY.get(datasetInfo.datasetId);
+      const review = dataset.category ? reviews.get(dataset.category) : null;
+      const local = dataset.key && review ? review.local.local[dataset.key] : dataset.id === 'boards.library' && review ? review.local.boards : undefined;
+      const base = dataset.key && review && review.base ? review.base.data.local[dataset.key] : dataset.id === 'boards.library' && review && review.base ? review.base.data.boards : undefined;
+      const remote = dataset.key && review && review.remoteData ? review.remoteData.local[dataset.key] : dataset.id === 'boards.library' && review && review.remoteData ? review.remoteData.boards : undefined;
+      return { ...datasetInfo, localHash: await hashValue(local), baseHash: await hashValue(base), remoteHash: await hashValue(remote),
+        localDirty: review ? stable(local) !== stable(base) : null, remoteChanged: review ? stable(remote) !== stable(base) : null,
+        entityCount: countEntities(local), conflictCount: review ? (review.mergePreview?.conflicts || []).filter(conflict => conflict.dataset === dataset.id).length : null,
+        lastSync: review ? categoryState(dataset.category).lastSuccessfulSyncAt : null };
+    }).reduce(async (previous, current) => [...await previous, await current], Promise.resolve([]));
+  }
+  root.InfoMatykaDrive = { version: MODULE_VERSION, categories: CATEGORIES, synchronize: () => synchronize(), syncInBackground, disconnect,
+    getDiagnostics, isConnected: connected, guardBoardWrite,
     isBusy: () => busy || authorizing,
     mount: async function (element) { panel = element; if (!client) preparePromise = null; render(); await prepare(); } };
   root.addEventListener('storage', event => {
