@@ -1,580 +1,145 @@
-(function() {
-  const STORAGE_KEY = 'infomatyka-progress-state';
-  const EVENTS_KEY = 'infomatyka-progress-events';
+(function (root) {
+  'use strict';
+  if (root.InfoMatykaDataRegistry) return;
 
-  function readProgressEvents() {
-    try {
-      const events = JSON.parse(localStorage.getItem(EVENTS_KEY) || '[]');
-      return Array.isArray(events) ? events.filter(event => event && typeof event.eventId === 'string') : [];
-    } catch (_) { return []; }
+  const datasets = [
+    { id: 'profile.user', label: 'Profil użytkownika', module: 'profile', key: 'infomatyka-profile-user', storage: 'localStorage', schema: 1, syncStrategy: 'field-merge', dataClass: 'settings' },
+    { id: 'profile.accessibility', label: 'Dostępność', module: 'profile', key: 'infomatyka-profile-accessibility', storage: 'localStorage', schema: 1, syncStrategy: 'field-merge', dataClass: 'settings' },
+    { id: 'progress.state', label: 'Postęp i osiągnięcia', module: 'progress', key: 'infomatyka-progress-state', storage: 'localStorage', schema: 1, syncStrategy: 'nested-entity-three-way', dataClass: 'entity' },
+    { id: 'progress.events', label: 'Zdarzenia postępu', module: 'progress', key: 'infomatyka-progress-events', storage: 'localStorage', schema: 1, syncStrategy: 'event-union', dataClass: 'event' },
+    { id: 'learning.progress', label: 'Progres nauki', module: 'progress', key: 'infomatyka-learning-progress', storage: 'localStorage', schema: 1, syncStrategy: 'field-merge', dataClass: 'entity' },
+    { id: 'learning.curriculum-overrides', label: 'Własne oznaczenia podstawy programowej', module: 'curriculum', key: 'infomatyka-learning-curriculum-overrides', storage: 'localStorage', schema: 1, syncStrategy: 'field-merge', dataClass: 'entity' },
+    { id: 'favorites.articles', label: 'Ulubione artykuły', module: 'favorites', key: 'infomatyka-favorites-articles', storage: 'localStorage', schema: 1, syncStrategy: 'set-union', dataClass: 'set' },
+    { id: 'generator.sets', label: 'Zestawy testów', module: 'generator', key: 'infomatyka-generator-test-sets', storage: 'localStorage', schema: 1, syncStrategy: 'entity-three-way', dataClass: 'entity' },
+    { id: 'generator.quick-quizzes', label: 'Szybkie kartkówki', module: 'generator', key: 'infomatyka-generator-quick-quizzes', storage: 'localStorage', schema: 1, syncStrategy: 'entity-three-way', dataClass: 'entity' },
+    { id: 'generator.custom-modules', label: 'Własne zadania i moduły', module: 'generator', key: 'infomatyka-generator-custom-questions', storage: 'localStorage', schema: 1, syncStrategy: 'entity-three-way', dataClass: 'entity' },
+    { id: 'generator.latex-scale', label: 'Skala LaTeX generatora', module: 'generator', key: 'infomatyka-generator-latex-scale', storage: 'localStorage', schema: 1, syncStrategy: 'field-merge', dataClass: 'setting' },
+    { id: 'generator.ignored-questions', label: 'Ukryte brakujące zadania', module: 'generator', key: 'infomatyka-generator-ignored-tasks', storage: 'localStorage', schema: 1, syncStrategy: 'set-union', dataClass: 'set' },
+    { id: 'teacher.records', label: 'Klasy, lekcje i dziennik', module: 'teacher', key: 'infomatyka-teacher-records', storage: 'localStorage', schema: 1, syncStrategy: 'nested-entity-three-way', dataClass: 'entity', dependencies: [] },
+    { id: 'teacher.sessions', label: 'Archiwalne wyniki testów', module: 'teacher', key: 'infomatyka-teacher-session-archive', storage: 'localStorage', schema: 1, syncStrategy: 'entity-three-way', dataClass: 'entity' },
+    { id: 'teacher.report-settings', label: 'Ustawienia raportów', module: 'teacher', key: 'infomatyka-teacher-report-settings', storage: 'localStorage', schema: 1, syncStrategy: 'field-merge', dataClass: 'settings' },
+    { id: 'teacher.grade-thresholds', label: 'Progi ocen', module: 'teacher', key: 'infomatyka-teacher-grade-thresholds', storage: 'localStorage', schema: 1, syncStrategy: 'field-merge', dataClass: 'settings' },
+    { id: 'teacher.recommendations', label: 'Rekomendacje nauczyciela', module: 'teacher', key: 'infomatyka-teacher-recommendations', storage: 'localStorage', schema: 1, syncStrategy: 'field-merge', dataClass: 'settings' },
+    { id: 'teacher.feedback-generator', label: 'Generator ocen i informacji zwrotnej', module: 'teacher', key: 'infomatyka-generator-feedback-data', storage: 'localStorage', schema: 1, syncStrategy: 'nested-entity-three-way', dataClass: 'entity' },
+    { id: 'account.setup-settings', label: 'Ustawienia profilu', module: 'profile', key: 'infomatyka-account-setup-settings', storage: 'localStorage', schema: 1, syncStrategy: 'field-merge', dataClass: 'settings' },
+    { id: 'materials.saved', label: 'Własne materiały generatora', module: 'materials', key: 'infomatyka-generator-saved-materials', storage: 'localStorage', schema: 1, syncStrategy: 'entity-three-way', dataClass: 'entity' },
+    { id: 'materials.projects', label: 'Projekty Kreatora Materiałów', module: 'materials', key: 'infomatyka-material-creator-projects', storage: 'localStorage', schema: 1, syncStrategy: 'entity-three-way', dataClass: 'entity' },
+    { id: 'calendar.user-events', label: 'Własne wydarzenia kalendarza', module: 'calendar', key: 'infomatyka-calendar-user-events', storage: 'localStorage', schema: 1, syncStrategy: 'entity-three-way', dataClass: 'entity' },
+    { id: 'organizer.classes', label: 'Układy grup i miejsca w klasie', module: 'class-organizer', key: 'infomatyka-class-organizer-layouts', storage: 'localStorage', schema: 1, syncStrategy: 'nested-entity-three-way', dataClass: 'entity' },
+    { id: 'duty.plans', label: 'Plany dyżurów', module: 'duty-planner', key: 'infomatyka-duty-plans', storage: 'localStorage', schema: 1, syncStrategy: 'entity-three-way', dataClass: 'entity' },
+    { id: 'spe.adjustment-bank', label: 'Własny bank dostosowań SPE', module: 'spe', key: 'infomatyka-spe-customization-bank', storage: 'localStorage', schema: 1, syncStrategy: 'entity-three-way', dataClass: 'entity' },
+    { id: 'spe.functional-areas', label: 'Własne obszary funkcjonalne SPE', module: 'spe', key: 'infomatyka-spe-functional-areas', storage: 'localStorage', schema: 1, syncStrategy: 'entity-three-way', dataClass: 'entity' },
+    { id: 'spe.projects', label: 'Projekty dostosowań SPE', module: 'spe', key: 'infomatyka-spe-adjustment-projects', storage: 'localStorage', schema: 1, syncStrategy: 'entity-three-way', dataClass: 'entity' },
+    { id: 'boards.library', label: 'Tablice, strony i assety', module: 'boards', storage: 'indexedDB:infomatyka_tablice_interaktywne', schema: 4, syncStrategy: 'nested-entity-three-way', dataClass: 'entity', binary: 'sha256-manifest', dependencies: ['materials.projects'] },
+    { id: 'generator.task-cache', label: 'Publiczna baza zadań', module: 'generator', key: 'infomatyka-generator-task-cache', storage: 'localforage', fallback: 'localStorage', schema: 1, syncStrategy: 'none', dataClass: 'remote-authoritative', reason: 'Odtwarzalna baza dostarczana przez InfoMatykę; do synchronizacji trafiają tylko własne zadania.' },
+    { id: 'teacher.roster-cache', label: 'Kopia list klas dla portalu', module: 'teacher', key: 'infomatyka-teacher-roster-cache', storage: 'localStorage', schema: 1, syncStrategy: 'none', dataClass: 'derived', reason: 'Kopia wyliczana z teacher.records.' },
+    { id: 'teacher.active-session', label: 'Aktywna sesja testowa', module: 'teacher', key: 'infomatyka-session-active-test', storage: 'localStorage', schema: 1, syncStrategy: 'none', dataClass: 'session', reason: 'Bieżący stan sesji online.' },
+    { id: 'student.active-session', label: 'Sesja portalu ucznia', module: 'student-portal', key: 'infomatyka-session-student', storage: 'localStorage', schema: 1, syncStrategy: 'none', dataClass: 'session', reason: 'Chwilowe połączenie i stan ucznia.' },
+    { id: 'student.transport-message', label: 'Wiadomości synchronizacji portalu', module: 'student-portal', key: 'infomatyka-session-sync-message', storage: 'localStorage', schema: 1, syncStrategy: 'none', dataClass: 'session', reason: 'Transport Firebase/BroadcastChannel, nie dane archiwalne.' },
+    { id: 'teacher.download-history', label: 'Historia pobrań tablic', module: 'teacher', key: 'infomatyka-teacher-download-history', storage: 'localStorage', schema: 1, syncStrategy: 'none', dataClass: 'device-local', reason: 'Pomocnicza historia pobrań na tym urządzeniu.' },
+    { id: 'duty.drafts', label: 'Szkice generatora dyżurów', module: 'duty-planner', key: 'infomatyka-ui-duty-drafts', storage: 'localStorage', schema: 1, syncStrategy: 'none', dataClass: 'device-local', reason: 'Tymczasowe szkice interfejsu.' },
+    { id: 'website.banner-dismissal', label: 'Zamknięcie banera strony', module: 'website', key: 'infomatyka-device-page-banner-dismissed', storage: 'sessionStorage', schema: 1, syncStrategy: 'none', dataClass: 'session', reason: 'Jednorazowe zamknięcie banera w bieżącej karcie.' },
+    { id: 'website.cookie-preferences', label: 'Zgody cookies', module: 'website', key: 'infomatyka-device-cookie-preferences', storage: 'localStorage', schema: 1, syncStrategy: 'none', dataClass: 'device-local', reason: 'Zgody i prezentacja na tym urządzeniu.' },
+    { id: 'website.drive-indicator', label: 'Widoczność wskaźnika synchronizacji', module: 'website', key: 'infomatyka-device-drive-indicator-visible', storage: 'localStorage', schema: 1, syncStrategy: 'none', dataClass: 'device-local', reason: 'Preferencja interfejsu.' },
+    { id: 'calendar.working-days-mode', label: 'Tryb dni roboczych', module: 'calendar', key: 'infomatyka-device-calendar-working-days-only', storage: 'localStorage', schema: 1, syncStrategy: 'none', dataClass: 'device-local', reason: 'Preferencja widoku publicznego kalendarza.' },
+    { id: 'calendar.user-events-visibility', label: 'Widoczność własnych wydarzeń', module: 'calendar', key: 'infomatyka-ui-calendar-user-events-visible', storage: 'localStorage', schema: 1, syncStrategy: 'none', dataClass: 'device-local', reason: 'Preferencja widoku kalendarza.' },
+    { id: 'calendar.oral-answer-choice', label: 'Ostatni wybór w pytaniach ustnych', module: 'oral-qa', key: 'infomatyka-ui-calendar-oral-answer-choice', storage: 'localStorage', schema: 1, syncStrategy: 'none', dataClass: 'device-local', reason: 'Wybór filtrów i aktywnego ucznia.' },
+    { id: 'account.local-profiles', label: 'Lokalne konta przeglądarki', module: 'account', key: 'infomatyka-device-account-<id>', storage: 'localStorage', schema: 1, syncStrategy: 'none', dataClass: 'credential', reason: 'Lokalna nazwa użytkownika i hasło; nigdy nie trafia na Drive.' },
+    { id: 'account.local-session', label: 'Aktywne konto lokalne', module: 'account', key: 'infomatyka-session-current-user', storage: 'sessionStorage', schema: 1, syncStrategy: 'none', dataClass: 'session', reason: 'Bieżący profil przeglądarki.' },
+    { id: 'generator.templates-cache', label: 'Cache szablonów generatora', module: 'generator', key: 'infomatyka-generator-cache-templates', storage: 'localStorage', schema: 1, syncStrategy: 'none', dataClass: 'cache', reason: 'Kopia odtwarzalna z GitHub/CDN.' },
+    { id: 'generator.quick-quizzes-cache', label: 'Cache szybkich kartkówek', module: 'generator', key: 'infomatyka-generator-cache-quick-quizzes', storage: 'localStorage', schema: 1, syncStrategy: 'none', dataClass: 'cache', reason: 'Kopia odtwarzalna z GitHub/CDN.' },
+    { id: 'generator.curriculum-cache', label: 'Cache podstawy programowej', module: 'generator', key: 'infomatyka-generator-cache-curriculum', storage: 'localStorage', schema: 1, syncStrategy: 'none', dataClass: 'cache', reason: 'Kopia odtwarzalna z GitHub/CDN.' },
+    { id: 'game.race-settings', label: 'Ustawienia i wynik gry edukacyjnej', module: 'games', key: 'infomatyka-games-race-settings', storage: 'localStorage', schema: 1, syncStrategy: 'none', dataClass: 'device-local', reason: 'Dane pojedynczej gry na tym urządzeniu.' },
+    { id: 'website.full-layout-session', label: 'Tryb pełnej strony', module: 'website', key: 'infomatyka-session-force-full-layout', storage: 'sessionStorage', schema: 1, syncStrategy: 'none', dataClass: 'session', reason: 'Jednorazowa preferencja prezentacji strony.' },
+    { id: 'boards.toolbar-layout', label: 'Układ paska narzędzi tablicy', module: 'boards', key: 'infomatyka-device-board-toolbar-layout', storage: 'localStorage', schema: 1, syncStrategy: 'none', dataClass: 'device-local', reason: 'Stan widoku na konkretnym urządzeniu.' },
+    { id: 'boards.palm-eraser', label: 'Ustawienia gumki dłoniowej', module: 'boards', key: 'infomatyka-device-board-palm-eraser', storage: 'localStorage', schema: 1, syncStrategy: 'none', dataClass: 'device-local', reason: 'Ustawienia sprzętowe/interfejsu.' },
+    { id: 'boards.clock-display', label: 'Widoczność zegara tablicy', module: 'boards', key: 'infomatyka-device-board-clock-display', storage: 'localStorage', schema: 1, syncStrategy: 'none', dataClass: 'device-local', reason: 'Preferencja widoku na tym urządzeniu.' },
+    { id: 'portal.firebase-sessions', label: 'Sesje Firebase portalu testowego', module: 'teacher-portal', storage: 'Firebase Realtime Database', schema: null, syncStrategy: 'none', dataClass: 'remote-authoritative', reason: 'Trwałe dla aktywnego testu, ale źródłowo zarządzane przez Firebase; nie dublować ich na Drive.' },
+    { id: 'account.firebase-profile', label: 'Profil konta online', module: 'account', storage: 'Firebase Authentication / Cloud Firestore', schema: null, syncStrategy: 'none', dataClass: 'remote-authoritative', reason: 'Źródłem prawdy jest usługa kont; lokalny stan jest sesją Firebase.' },
+    { id: 'cloud.preferences', label: 'Ustawienia zapisu w chmurze', module: 'cloud-save', key: 'infomatyka-cloud-save-settings', storage: 'localStorage', schema: 1, syncStrategy: 'none', dataClass: 'device-local' },
+    { id: 'cloud.device-id', label: 'Identyfikator urządzenia zapisu', module: 'cloud-save', key: 'infomatyka-cloud-save-device', storage: 'localStorage', schema: 1, syncStrategy: 'none', dataClass: 'device-local' },
+    { id: 'cloud.oauth-session', label: 'Sesja OAuth Drive', module: 'cloud-save', key: 'infomatyka-cloud-save-session', storage: 'sessionStorage', schema: 1, syncStrategy: 'none', dataClass: 'credential' },
+    { id: 'cloud.base-history', label: 'Baza i historia zapisu', module: 'cloud-save', key: 'infomatyka-cloud-save/data', storage: 'localforage', schema: 1, syncStrategy: 'none', dataClass: 'device-local' },
+
+  ];
+
+  function parse(raw, dataset) {
+    if (raw === null || raw === undefined) return null;
+    let value;
+    try { value = JSON.parse(raw); }
+    catch (_) { throw new Error('Dane „' + dataset.label + '” nie zawierają poprawnego JSON.'); }
+    if (dataset.syncStrategy === 'event-union' && !Array.isArray(value)) throw new Error('Zdarzenia muszą być zapisaną listą.');
+    if (dataset.syncStrategy === 'set-union' && !Array.isArray(value)) throw new Error('Zbiór musi być zapisaną listą.');
+    return value;
   }
 
-  function createProgressEventId() {
-    if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
-    return 'xp-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+  function getDiagnostics() {
+    return datasets.map(dataset => ({ datasetId: dataset.id, label: dataset.label, module: dataset.module,
+      storage: dataset.storage, fallback: dataset.fallback || null, key: dataset.key || null, schema: dataset.schema, strategy: dataset.syncStrategy,
+      dataClass: dataset.dataClass, reason: dataset.reason || null, dependencies: dataset.dependencies || [] }));
   }
 
-  function ensureProgressHistoryIds(history) {
-    history.forEach(entry => {
-      if (!entry || typeof entry !== 'object' || entry.id) return;
-      entry.id = 'progress-history-' + [entry.timestamp || '', entry.type || '', entry.name || '', entry.materialId || ''].join('-');
-    });
+  function stableId(value) {
+    if (typeof value === 'string' || typeof value === 'number') return String(value);
+    if (!value || typeof value !== 'object') return '';
+    return String(value.id || value.eventId || value.value || value.url || '');
   }
 
-  let globalConfig = {
-    xpBrackets: [
-      { maxLevel: 9999, xpRequired: 500 }
-    ],
-    xpRewards: {
-      gra: 100,
-      quiz: 50,
-      wizualizacja: 20,
-      zadanieDnia: 30
+  function describe(datasetId, value) {
+    const dataset = datasets.find(item => item.id === datasetId);
+    if (!dataset) throw new Error('Nieznany zbiór danych: ' + datasetId);
+    const recordCount = Array.isArray(value) ? value.length : value && typeof value === 'object'
+      ? Object.keys(value).length : value == null ? 0 : 1;
+    return { datasetId, label: dataset.label, storage: dataset.storage, key: dataset.key || null,
+      strategy: dataset.syncStrategy, fallback: dataset.fallback || null, recordCount };
+  }
+
+  const registry = {
+    version: '1.0.0',
+    datasets: Object.freeze(datasets.map(dataset => Object.freeze(dataset))),
+    get(datasetId) { return datasets.find(dataset => dataset.id === datasetId) || null; },
+    getByKey(key) { return datasets.find(dataset => dataset.key === key) || null; },
+    getDiagnostics,
+    describe,
+    async capture(datasetId, context) {
+      const dataset = this.get(datasetId);
+      if (!dataset) throw new Error('Nieznany zbiór danych: ' + datasetId);
+      if (!dataset.key || dataset.storage !== 'localStorage') throw new Error('Zbiór wymaga adaptera: ' + dataset.storage);
+      return context.storage.getItem(dataset.key);
     },
-    achievements: [
-      { id: 'xp_100', name: 'Młody Adept', desc: 'Zdobądź łącznie 100 XP', icon: 'fa-solid fa-seedling', target: 'totalXp', val: 100 },
-      { id: 'xp_1000', name: 'Uczeń Czarnoksiężnika', desc: 'Zdobądź łącznie 1000 XP', icon: 'fa-solid fa-wand-magic-sparkles', target: 'totalXp', val: 1000 },
-      { id: 'first_game', name: 'Pierwsze Koty', desc: 'Ukończ pierwszą grę', icon: 'fa-solid fa-gamepad', target: 'gamesPlayed', val: 1 },
-      { id: 'daily_first', name: 'Pierwszy krok', desc: 'Ukończ pierwsze zadanie dnia', icon: 'fa-solid fa-calendar-check', target: 'dailyTasksCompleted', val: 1 },
-      { id: 'daily_7', name: 'Tydzień bez przerwy', desc: 'Rozwiązuj zadanie dnia przez 7 dni z rzędu', icon: 'fa-solid fa-fire', target: 'maxDailyTaskStreak', val: 7 },
-      { id: 'daily_30', name: 'Miesiąc wytrwałości', desc: 'Rozwiązuj zadanie dnia przez 30 dni z rzędu', icon: 'fa-solid fa-medal', target: 'maxDailyTaskStreak', val: 30 },
-      { id: 'daily_365', name: 'Rok konsekwencji', desc: 'Rozwiązuj zadanie dnia przez 365 dni z rzędu', icon: 'fa-solid fa-trophy', target: 'maxDailyTaskStreak', val: 365 }
-    ]
-  };
-
-  window.InfoMatykaSDK = {
-    config: null,
-
-    renderPostBanner: function(bannerConfig) {
-      var container = document.getElementById('custom-post-banner');
-      if (!container) return;
-
-      if (!bannerConfig || !bannerConfig.active) {
-        container.classList.add('hidden');
-        return;
-      }
-
-      var types = {
-        info: {
-          bg: 'bg-blue-50 border-blue-200 text-blue-800',
-          iconColor: 'text-blue-500',
-          btnClass: 'bg-blue-600 hover:bg-blue-700 text-white visited:text-white',
-          defaultIcon: 'fa-info-circle'
-        },
-        warning: {
-          bg: 'bg-amber-50 border-amber-200 text-amber-800',
-          iconColor: 'text-amber-500',
-          btnClass: 'bg-amber-600 hover:bg-amber-700 text-white visited:text-white',
-          defaultIcon: 'fa-exclamation-triangle'
-        },
-        success: {
-          bg: 'bg-emerald-50 border-emerald-200 text-emerald-800',
-          iconColor: 'text-emerald-500',
-          btnClass: 'bg-emerald-600 hover:bg-emerald-700 text-white visited:text-white',
-          defaultIcon: 'fa-check-circle'
-        },
-        danger: {
-          bg: 'bg-red-50 border-red-200 text-red-800',
-          iconColor: 'text-red-500',
-          btnClass: 'bg-red-600 hover:bg-red-700 text-white visited:text-white',
-          defaultIcon: 'fa-exclamation-circle'
-        },
-        custom: {
-          bg: '',
-          iconColor: '',
-          btnClass: '',
-          defaultIcon: 'fa-bullhorn'
-        }
-      };
-
-      var type = bannerConfig.type || 'info';
-      var styleConfig = types[type] || types.info;
-
-      container.className = 'w-full mb-6 p-4 rounded-xl shadow-sm border text-left flex items-start space-x-3 transition-all duration-300';
-      
-      if (type === 'custom') {
-        container.style.backgroundColor = bannerConfig.backgroundColor || '#f9fafb';
-        container.style.borderColor = bannerConfig.borderColor || '#e5e7eb';
-        container.style.color = bannerConfig.textColor || '#1f2937';
-      } else {
-        var classes = styleConfig.bg.split(' ');
-        for (var i = 0; i < classes.length; i++) {
-          container.classList.add(classes[i]);
-        }
-        container.style.backgroundColor = '';
-        container.style.borderColor = '';
-        container.style.color = '';
-      }
-
-      var iconName = bannerConfig.icon || styleConfig.defaultIcon;
-      var iconColor = type === 'custom' ? (bannerConfig.iconColor || bannerConfig.textColor || '') : styleConfig.iconColor;
-      
-      var iconClass = '';
-      if (iconName.indexOf('fa-') !== -1) {
-        iconClass = iconName;
-        if (iconName.indexOf('fa ') === -1) {
-          iconClass = 'fa ' + iconClass;
-        }
-      } else {
-        iconClass = 'fa fa-' + iconName;
-      }
-
-      var actionBtnHtml = '';
-      if (bannerConfig.link && bannerConfig.linkText) {
-        if (type === 'custom') {
-          var btnBg = bannerConfig.buttonBackgroundColor || '#111827';
-          var btnText = bannerConfig.buttonTextColor || '#ffffff';
-          actionBtnHtml = '<a href="' + bannerConfig.link + '" class="inline-flex items-center px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200 hover:opacity-90" style="background-color: ' + btnBg + '; color: ' + btnText + '; text-decoration: none !important;">' + bannerConfig.linkText + '</a>';
-        } else {
-          actionBtnHtml = '<a href="' + bannerConfig.link + '" class="inline-flex items-center px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200 ' + styleConfig.btnClass + '" style="text-decoration: none !important;">' + bannerConfig.linkText + '</a>';
-        }
-      }
-
-      var iconStyle = type === 'custom' && iconColor ? ' style="color: ' + iconColor + ';"' : '';
-      var iconMarkup = '<div class="flex-shrink-0 mt-0.5"><i class="' + iconClass + ' text-xl ' + iconColor + '"' + iconStyle + '></i></div>';
-
-      container.innerHTML = iconMarkup +
-        '<div class="flex-grow flex flex-col md:flex-row md:items-center md:justify-between gap-4">' +
-          '<div class="text-sm font-medium leading-relaxed">' +
-            (bannerConfig.text || '') +
-          '</div>' +
-          (actionBtnHtml ? '<div class="flex-shrink-0">' + actionBtnHtml + '</div>' : '') +
-        '</div>';
-
-      container.classList.remove('hidden');
+    validate(datasetId, raw) {
+      const dataset = this.get(datasetId);
+      if (!dataset) return false;
+      if (raw === null || raw === undefined) return true;
+      if (dataset.syncStrategy === 'event-union') return Array.isArray(raw) && raw.every(item => item && typeof item === 'object' && stableId(item));
+      if (dataset.syncStrategy === 'set-union') return Array.isArray(raw) && raw.every(stableId);
+      if (dataset.syncStrategy === 'entity-three-way') return Array.isArray(raw) && raw.every(item => item && typeof item === 'object' && stableId(item));
+      return typeof raw === 'object' || ['string', 'number', 'boolean'].includes(typeof raw);
     },
-
-    renderPageBanner: function(bannerConfig) {
-      var container = document.getElementById('custom-page-banner');
-      if (!container) return;
-
-      if (!bannerConfig || !bannerConfig.active || sessionStorage.getItem('infomatyka-device-page-banner-dismissed') === 'true') {
-        container.classList.add('hidden');
-        return;
-      }
-
-      var types = {
-        info: {
-          bg: 'bg-cyan-600 text-white',
-          btnClass: 'bg-white text-cyan-700 hover:bg-cyan-50 focus:ring-cyan-300',
-          defaultIcon: 'fa-info-circle'
-        },
-        warning: {
-          bg: 'bg-amber-500 text-white',
-          btnClass: 'bg-white text-amber-700 hover:bg-amber-50 focus:ring-amber-300',
-          defaultIcon: 'fa-exclamation-triangle'
-        },
-        success: {
-          bg: 'bg-emerald-600 text-white',
-          btnClass: 'bg-white text-emerald-700 hover:bg-emerald-50 focus:ring-emerald-300',
-          defaultIcon: 'fa-check-circle'
-        },
-        danger: {
-          bg: 'bg-gradient-to-r from-rose-600 via-red-600 to-rose-600 text-white',
-          btnClass: 'bg-white text-red-700 hover:bg-red-50 focus:ring-red-300 shadow-sm',
-          defaultIcon: 'fa-solid fa-shield-virus animate-pulse'
-        },
-        custom: {
-          bg: '',
-          btnClass: '',
-          defaultIcon: 'fa-bullhorn'
-        }
-      };
-
-      var type = bannerConfig.type || 'info';
-      var styleConfig = types[type] || types.info;
-
-      container.className = 'w-full flex-shrink-0 z-50 shadow-md transition-all duration-300 relative';
-      
-      if (type === 'custom') {
-        container.style.backgroundColor = bannerConfig.backgroundColor || '#1f2937';
-        container.style.color = bannerConfig.textColor || '#ffffff';
-      } else {
-        var classes = styleConfig.bg.split(' ');
-        for (var i = 0; i < classes.length; i++) {
-          container.classList.add(classes[i]);
-        }
-        container.style.backgroundColor = '';
-        container.style.color = '';
-      }
-
-      var iconName = bannerConfig.icon || styleConfig.defaultIcon;
-      var iconClass = '';
-      if (iconName.indexOf('fa-') !== -1) {
-        iconClass = iconName;
-        if (iconName.indexOf('fa ') === -1) {
-          iconClass = 'fa ' + iconClass;
-        }
-      } else {
-        iconClass = 'fa fa-' + iconName;
-      }
-
-      var actionBtnHtml = '';
-      if (bannerConfig.link && bannerConfig.linkText) {
-        if (type === 'custom') {
-          var btnBg = bannerConfig.buttonBackgroundColor || '#ffffff';
-          var btnText = bannerConfig.buttonTextColor || '#1f2937';
-          actionBtnHtml = '<a href="' + bannerConfig.link + '" class="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-bold transition-all duration-200 hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2" style="background-color: ' + btnBg + '; color: ' + btnText + '; text-decoration: none !important;">' + bannerConfig.linkText + '</a>';
-        } else {
-          actionBtnHtml = '<a href="' + bannerConfig.link + '" class="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-bold transition-all duration-200 ' + styleConfig.btnClass + ' focus:outline-none focus:ring-2 focus:ring-offset-2" style="text-decoration: none !important;">' + bannerConfig.linkText + '</a>';
-        }
-      }
-
-      var closeBtnHtml = '';
-      if (bannerConfig.dismissible !== false) {
-        closeBtnHtml = '<button id="close-page-banner-btn" class="flex-shrink-0 text-white/80 hover:text-white transition-colors p-1 -mr-1 rounded-md hover:bg-white/10 focus:outline-none" aria-label="Zamknij powiadomienie">' +
-          '<svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>' +
-        '</button>';
-      }
-
-      var textMarkup = bannerConfig.text || '';
-      
-      container.innerHTML = 
-        '<div class="max-w-7xl mx-auto py-4 px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-4 flex-wrap sm:flex-nowrap">' +
-          '<div class="flex items-center gap-3 min-w-0 flex-grow md:flex-grow-0">' +
-            '<span class="flex p-1 rounded-lg bg-black/10 text-xl flex-shrink-0">' +
-              '<i class="' + iconClass + '"></i>' +
-            '</span>' +
-            '<p class="text-sm font-medium text-white leading-tight text-left">' +
-              textMarkup +
-            '</p>' +
-          '</div>' +
-          '<div class="flex items-center gap-3 flex-shrink-0 ml-auto md:ml-0">' +
-            (actionBtnHtml ? '<div class="order-1 sm:order-none">' + actionBtnHtml + '</div>' : '') +
-            closeBtnHtml +
-          '</div>' +
-        '</div>';
-
-      container.classList.remove('hidden');
-
-      if (bannerConfig.dismissible !== false) {
-        var closeBtn = document.getElementById('close-page-banner-btn');
-        if (closeBtn) {
-          closeBtn.addEventListener('click', function() {
-            container.classList.add('hidden');
-            sessionStorage.setItem('infomatyka-device-page-banner-dismissed', 'true');
-          });
-        }
-      }
-    },
-
-    getLevelInfo: function(totalXp) {
-      let brackets = globalConfig.xpBrackets;
-      if (this.config && this.config.progressConfig && this.config.progressConfig.xpBrackets) {
-        brackets = this.config.progressConfig.xpBrackets;
-      } else if (this.config && this.config.progressConfig && this.config.progressConfig.xpPerLevel) {
-        brackets = [{ maxLevel: 9999, xpRequired: this.config.progressConfig.xpPerLevel }];
-      }
-
-      let currentLvl = 1;
-      let tempXp = totalXp;
-
-      while (true) {
-        const bracket = brackets.find(b => currentLvl <= b.maxLevel) || brackets[brackets.length - 1];
-        const req = bracket.xpRequired;
-
-        if (tempXp >= req) {
-          tempXp -= req;
-          currentLvl++;
-        } else {
-          return {
-            level: currentLvl,
-            xpInCurrentLevel: tempXp,
-            xpNeededForNext: req,
-            percent: (tempXp / req) * 100
-          };
-        }
-      }
-    },
-
-    getProgress: function() {
-      let raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) {
-        return {
-          xp: 0, streak: 0, lastActivityDate: null, completedToday: [], history: [], achievements: {},
-          dailyTaskStreak: 0, lastDailyTaskDate: null, completedDailyTasks: {},
-          settings: { trackingEnabled: true },
-          stats: { totalXp: 0, gamesPlayed: 0, quizzesSolved: 0, visualizersViewed: 0, maxStreak: 0, dailyTasksCompleted: 0, maxDailyTaskStreak: 0 }
-        };
-      }
-      let parsed = JSON.parse(raw);
-      if (!parsed.settings) parsed.settings = { trackingEnabled: true };
-      if (!parsed.stats) {
-        parsed.stats = { totalXp: parsed.xp || 0, gamesPlayed: 0, quizzesSolved: 0, visualizersViewed: 0, maxStreak: parsed.streak || 0 };
-      }
-      if (!parsed.achievements) parsed.achievements = {};
-      if (!parsed.completedToday) parsed.completedToday = [];
-      if (!parsed.history) parsed.history = [];
-      if (!parsed.completedDailyTasks) parsed.completedDailyTasks = {};
-      if (!parsed.dailyTaskStreak) parsed.dailyTaskStreak = 0;
-      if (!parsed.stats.dailyTasksCompleted) parsed.stats.dailyTasksCompleted = 0;
-      if (!parsed.stats.maxDailyTaskStreak) parsed.stats.maxDailyTaskStreak = 0;
-
-      const events = readProgressEvents();
-      const baseline = Number.isFinite(Number(parsed.xpBaseline))
-        ? Number(parsed.xpBaseline)
-        : Number(parsed.xp || 0);
-      parsed.xpBaseline = baseline;
-      parsed.xp = baseline + events.reduce((total, event) => total + (Number(event.deltaXp) || 0), 0);
-      parsed.stats.totalXp = parsed.xp;
-      ensureProgressHistoryIds(parsed.history);
-
-      if (parsed.streak > 0 && parsed.lastActivityDate) {
-        const todayStr = new Date().toDateString();
-        const yesterday = new Date();
-        yesterday.setDate(yesterday.getDate() - 1);
-        const yesterdayStr = yesterday.toDateString();
-        if (parsed.lastActivityDate !== todayStr && parsed.lastActivityDate !== yesterdayStr) {
-          parsed.streak = 0;
-          (localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed)), window.InfoMatykaCloudSave?.markDirty());
-        }
-      }
-
-      return parsed;
-    },
-
-    saveProgress: function(data) {
-      const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
-      const existingEvents = readProgressEvents();
-      const previousXp = Number(stored && stored.xp) || 0;
-      const previousEventTotal = existingEvents.reduce((total, event) => total + (Number(event.deltaXp) || 0), 0);
-      const baseline = stored && Number.isFinite(Number(stored.xpBaseline))
-        ? Number(stored.xpBaseline) : previousXp - previousEventTotal;
-      const nextXp = Number(data.xp) || 0;
-      const deltaXp = nextXp - previousXp;
-      data.xpBaseline = baseline;
-      data.stats = data.stats || {};
-      data.stats.totalXp = nextXp;
-      data.history = Array.isArray(data.history) ? data.history : [];
-      ensureProgressHistoryIds(data.history);
-
-      if (deltaXp !== 0) {
-        const latestActivity = data.history[0] || {};
-        existingEvents.push({
-          eventId: createProgressEventId(),
-          type: latestActivity.type || 'xp-adjustment',
-          deltaXp,
-          activityId: latestActivity.id || null,
-          materialId: latestActivity.materialId || null,
-          createdAt: Number(latestActivity.timestamp) || Date.now()
-        });
-        (localStorage.setItem(EVENTS_KEY, JSON.stringify(existingEvents)), window.InfoMatykaCloudSave?.markDirty());
-      }
-      (localStorage.setItem(STORAGE_KEY, JSON.stringify(data)), window.InfoMatykaCloudSave?.markDirty());
-      window.dispatchEvent(new Event('infomatyka_progress_updated'));
-      this.updateNavbarDropdown();
-    },
-
-    getLocalDateKey: function(date) {
-      var d = date || new Date();
-      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-    },
-
-    isDailyTaskCompleted: function(dateKey) {
-      var key = dateKey || this.getLocalDateKey();
-      return !!this.getProgress().completedDailyTasks[key];
-    },
-
-    completeDailyTask: function(taskId) {
-      var data = this.getProgress();
-      var todayKey = this.getLocalDateKey();
-      if (data.completedDailyTasks[todayKey]) return { awarded: false, progress: data };
-      if (data.settings && data.settings.trackingEnabled === false) return { awarded: false, trackingDisabled: true, progress: data };
-      var yesterday = new Date();
-      yesterday.setDate(yesterday.getDate() - 1);
-      var yesterdayKey = this.getLocalDateKey(yesterday);
-      data.dailyTaskStreak = data.lastDailyTaskDate === yesterdayKey ? data.dailyTaskStreak + 1 : 1;
-      data.lastDailyTaskDate = todayKey;
-      data.completedDailyTasks[todayKey] = taskId || todayKey;
-      data.stats.dailyTasksCompleted = (data.stats.dailyTasksCompleted || 0) + 1;
-      data.stats.maxDailyTaskStreak = Math.max(data.stats.maxDailyTaskStreak || 0, data.dailyTaskStreak);
-      var baseXP = (this.config && this.config.progressConfig && this.config.progressConfig.xpRewards && this.config.progressConfig.xpRewards.zadanieDnia) || globalConfig.xpRewards.zadanieDnia;
-      data.xp += baseXP;
-      data.stats.totalXp += baseXP;
-      data.history.unshift({ name: 'Zadanie dnia', type: 'zadanieDnia', score: 1, maxScore: 1, materialId: taskId || todayKey, xp: baseXP, timestamp: Date.now() });
-      if (data.history.length > 30) data.history.pop();
-      this.saveProgress(data);
-      this.showToast('+' + baseXP + ' PD', 'Zadanie dnia ukończone', 'fa-solid fa-calendar-check');
-      this.checkAchievements(data);
-      return { awarded: true, xp: baseXP, progress: data };
-    },
-
-    registerActivity: function(activity) {
-      let data = this.getProgress();
-
-      if (data.settings && data.settings.trackingEnabled === false) {
-        return;
-      }
-
-      const type = activity.type;
-      const baseXP = (this.config && this.config.progressConfig && this.config.progressConfig.xpRewards && this.config.progressConfig.xpRewards[type])
-                      ? this.config.progressConfig.xpRewards[type]
-                      : (globalConfig.xpRewards[type] || 20);
-
-      let earnedXP = baseXP;
-      if (activity.score !== undefined && activity.maxScore !== undefined && activity.maxScore > 0) {
-        let ratio = activity.score / activity.maxScore;
-        earnedXP = Math.round(baseXP * ratio);
-      }
-
-      data.xp += earnedXP;
-      data.stats.totalXp += earnedXP;
-
-      if (type === 'gra') data.stats.gamesPlayed++;
-      if (type === 'quiz') data.stats.quizzesSolved++;
-      if (type === 'wizualizacja') data.stats.visualizersViewed++;
-
-      const todayStr = new Date().toDateString();
-      if (data.lastActivityDate !== todayStr) {
-        if (data.lastActivityDate) {
-          const yesterday = new Date();
-          yesterday.setDate(yesterday.getDate() - 1);
-          if (data.lastActivityDate === yesterday.toDateString()) {
-            data.streak++;
-          } else {
-            data.streak = 1;
-          }
-        } else {
-          data.streak = 1;
-        }
-        data.lastActivityDate = todayStr;
-        if (data.streak > data.stats.maxStreak) {
-          data.stats.maxStreak = data.streak;
-        }
-      }
-
-      data.history.unshift({
-        name: activity.name,
-        type: type,
-        score: activity.score !== undefined ? activity.score : null,
-        maxScore: activity.maxScore !== undefined ? activity.maxScore : null,
-        materialId: activity.materialId || null,
-        learningPath: activity.learningPath || null,
-        learningStatus: activity.learningStatus || null,
-        xp: earnedXP,
-        timestamp: Date.now()
+    merge(datasetId, base, local, remote, mergeCore, options = {}) {
+      const dataset = this.get(datasetId);
+      if (!dataset) throw new Error('Nieznany zbiór danych: ' + datasetId);
+      return mergeCore.mergeThreeWay(parse(base, dataset), parse(local, dataset), parse(remote, dataset), {
+        dataset: dataset.id, strategy: dataset.syncStrategy, ...options
       });
-
-      if (data.history.length > 30) data.history.pop();
-
-      this.saveProgress(data);
-      this.showToast(`+${earnedXP} XP`, activity.name, 'fa-solid fa-gem');
-
-      this.checkAchievements(data);
     },
-
-    checkAchievements: function(data) {
-      let newlyUnlocked = [];
-      const achievementsList = (this.config && this.config.progressConfig && this.config.progressConfig.achievements)
-                              ? this.config.progressConfig.achievements
-                              : globalConfig.achievements;
-
-      achievementsList.forEach(ach => {
-        if (!data.achievements[ach.id]) {
-          const currentVal = data.stats[ach.target] || 0;
-          if (currentVal >= ach.val) {
-            data.achievements[ach.id] = true;
-            newlyUnlocked.push(ach);
-          }
-        }
-      });
-
-      if (newlyUnlocked.length > 0) {
-        this.saveProgress(data);
-        newlyUnlocked.forEach(ach => {
-          this.showToast(`Nowe osiągnięcie!`, ach.name, ach.icon, true);
-        });
-      }
+    apply(datasetId, raw, context) {
+      const dataset = this.get(datasetId);
+      const value = typeof raw === 'string' && dataset ? parse(raw, dataset) : raw;
+      if (!dataset || !this.validate(datasetId, value)) throw new Error('Nie można zastosować nieprawidłowych danych.');
+      if (!dataset.key || dataset.storage !== 'localStorage') throw new Error('Zbiór wymaga adaptera: ' + dataset.storage);
+      if (raw === null) context.storage.removeItem(dataset.key);
+      else context.storage.setItem(dataset.key, typeof raw === 'string' ? raw : JSON.stringify(raw));
+      if (root.dispatchEvent && root.CustomEvent) root.dispatchEvent(new CustomEvent('infomatyka:data-changed', { detail: { dataset: dataset.id } }));
     },
-
-    showToast: function(title, text, icon, isAchievement = false) {
-      const container = document.getElementById('infomatyka-toast-container');
-      if (!container) return;
-
-      const toast = document.createElement('div');
-      toast.className = `im-toast ${isAchievement ? 'achievement-toast' : ''}`;
-
-      toast.innerHTML = `
-        <div style="background: ${isAchievement ? '#fef3c7' : '#ecfeff'}; color: ${isAchievement ? '#d97706' : '#0891b2'}; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
-          <i class="${icon}"></i>
-        </div>
-        <div style="flex-grow: 1;">
-          <div style="font-weight: 700; font-size: 14px; color: #1f2937;">${title}</div>
-          <div style="font-size: 12px; color: #6b7280; margin-top: 2px;">${text}</div>
-        </div>
-      `;
-
-      container.appendChild(toast);
-      setTimeout(() => toast.classList.add('show'), 100);
-      setTimeout(() => {
-        toast.classList.remove('show');
-        setTimeout(() => toast.remove(), 400);
-      }, 4000);
-    },
-
-    updateNavbarDropdown: function() {
-      const data = this.getProgress();
-      const totalXp = data.stats ? data.stats.totalXp : (data.xp || 0);
-      const lvlInfo = this.getLevelInfo(totalXp);
-
-      const xpEl = document.getElementById('nav-dropdown-xp');
-      const lvlEl = document.getElementById('nav-dropdown-level');
-      const streakEl = document.getElementById('nav-dropdown-streak');
-      const barEl = document.getElementById('nav-dropdown-bar');
-
-      if (lvlEl) lvlEl.textContent = `Poziom ${lvlInfo.level}`;
-      if (xpEl) xpEl.textContent = `${lvlInfo.xpInCurrentLevel}/${lvlInfo.xpNeededForNext} XP`;
-      if (streakEl) streakEl.textContent = data.streak || 0;
-      if (barEl) barEl.style.width = `${lvlInfo.percent}%`;
-
-      const xpElMob = document.getElementById('nav-dropdown-xp-mob');
-      const lvlElMob = document.getElementById('nav-dropdown-level-mob');
-      const streakElMob = document.getElementById('nav-dropdown-streak-mob');
-      const barElMob = document.getElementById('nav-dropdown-bar-mob');
-
-      if (lvlElMob) lvlElMob.textContent = `Poziom ${lvlInfo.level}`;
-      if (xpElMob) xpElMob.textContent = `${lvlInfo.xpInCurrentLevel}/${lvlInfo.xpNeededForNext} XP`;
-      if (streakElMob) streakElMob.textContent = data.streak || 0;
-      if (barElMob) barElMob.style.width = `${lvlInfo.percent}%`;
+    async backup(datasetId, value, context = {}) {
+      const dataset = this.get(datasetId);
+      if (!dataset) throw new Error('Nieznany zbiór danych: ' + datasetId);
+      if (typeof context.backup === 'function') return context.backup(dataset, value);
+      return null;
     }
   };
 
-  document.addEventListener('DOMContentLoaded', function() {
-    if (typeof githubConfigUrl !== 'undefined') {
-      fetch(githubConfigUrl)
-        .then(res => res.json())
-        .then(data => {
-          window.InfoMatykaSDK.config = data;
-          if (data.progressConfig) {
-            if (data.progressConfig.xpRewards) globalConfig.xpRewards = data.progressConfig.xpRewards;
-            if (data.progressConfig.achievements) globalConfig.achievements = data.progressConfig.achievements;
-          }
-          if (data.postNotificationBanner) {
-            window.InfoMatykaSDK.renderPostBanner(data.postNotificationBanner);
-          }
-          var pageBannerConfig = data.pageNotificationBanner || {
-            active: true,
-            type: 'danger',
-            icon: 'fa-shield-virus',
-            text: '<strong>ALERT BEZPIECZEŃSTWA:</strong> Wykryto próbę naruszenia integralności serwisu (potencjalne zhakowanie strony). Ze względów bezpieczeństwa zalecamy pilną zmianę hasła do swojego konta.',
-            link: 'https://www.infomatyka.pl/p/moje-konto.html',
-            linkText: 'Zmień hasło',
-            dismissible: true
-          };
-          if (pageBannerConfig && pageBannerConfig.active) {
-            window.InfoMatykaSDK.renderPageBanner(pageBannerConfig);
-          }
-          window.dispatchEvent(new Event('infomatyka_config_loaded'));
-          window.InfoMatykaSDK.updateNavbarDropdown();
-        })
-        .catch(err => {
-          console.warn("Użyto domyślnej konfiguracji grywalizacji.", err);
-          window.dispatchEvent(new Event('infomatyka_config_loaded'));
-          window.InfoMatykaSDK.updateNavbarDropdown();
-        });
-    } else {
-      window.dispatchEvent(new Event('infomatyka_config_loaded'));
-      window.InfoMatykaSDK.updateNavbarDropdown();
-    }
-  });
-})();
+  root.InfoMatykaDataRegistry = Object.freeze(registry);
+  if (typeof module !== 'undefined' && module.exports) module.exports = root.InfoMatykaDataRegistry;
+})(typeof globalThis === 'object' ? globalThis : this);
