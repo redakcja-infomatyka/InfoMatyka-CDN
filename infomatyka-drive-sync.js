@@ -16,10 +16,34 @@
   const object = value => !!value && typeof value === 'object' && !Array.isArray(value);
   const isDeletedRow = row => object(row) && row.__deleted === true;
   const withoutBlob = asset => { const { blob, ...rest } = asset; return rest; };
+  const isJsonOmitted = value => value === undefined || typeof value === 'function' || typeof value === 'symbol';
   function stable(value) {
-    if (Array.isArray(value)) return '[' + value.map(stable).join(',') + ']';
-    if (object(value)) return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + stable(value[key])).join(',') + '}';
+    if (Array.isArray(value)) return '[' + value.map(item => isJsonOmitted(item) ? 'null' : stable(item)).join(',') + ']';
+    if (object(value)) return '{' + Object.keys(value).filter(key => !isJsonOmitted(value[key])).sort()
+      .map(key => JSON.stringify(key) + ':' + stable(value[key])).join(',') + '}';
     return JSON.stringify(value);
+  }
+  function parseJson(text) {
+    try { return JSON.parse(text); }
+    catch (error) {
+      const sentinel = '\u0000__INFOMATYKA_UNDEFINED_PROPERTY__\u0000';
+      const repaired = text.replace(/("(?:\\.|[^"\\])*"\s*:\s*)undefined(?=\s*[,}])/g,
+        (_, property) => property + JSON.stringify(sentinel));
+      if (repaired === text) throw error;
+      let value;
+      try { value = JSON.parse(repaired); } catch (_) { throw error; }
+      const removeUndefinedProperties = item => {
+        if (Array.isArray(item)) return item.map(child => child === sentinel ? null : removeUndefinedProperties(child));
+        if (object(item)) {
+          for (const [key, child] of Object.entries(item)) {
+            if (child === sentinel) delete item[key];
+            else item[key] = removeUndefinedProperties(child);
+          }
+        }
+        return item;
+      };
+      return removeUndefinedProperties(value);
+    }
   }
   function manifestData(snapshot) {
     if (!snapshot || !has(snapshot, 'boardAssetBlobs')) return snapshot;
@@ -241,9 +265,9 @@
       }
       if (type === 'blob') return response.blob();
       const text = await response.text();
-      if (type === 'file') return { data: text ? JSON.parse(text) : null, etag: response.headers.get('ETag') };
+      if (type === 'file') return { data: text ? parseJson(text) : null, etag: response.headers.get('ETag') };
       if (new TextEncoder().encode(text).length > MAX_SAVE_BYTES + 100000) throw new Error('Zapis Drive przekracza limit 8 MiB.');
-      return text ? JSON.parse(text) : null;
+      return text ? parseJson(text) : null;
     }
     async findSave() {
       const params = new URLSearchParams({ spaces: 'appDataFolder', pageSize: '10',
