@@ -477,8 +477,9 @@
       if (new TextEncoder().encode(content).length > MAX_BYTES) throw new Error('Zapis przekracza 8 MiB.');
       if (ownFiles.length > 1) throw new Error('Znaleziono kilka plików nagłówka tego urządzenia na Drive. Synchronizacja została zatrzymana; żaden plik nie został zmieniony.');
       if (ownFiles.length) {
-        if (!ownFiles[0].etag) throw new Error('Nie udało się potwierdzić wersji aktualnego pliku Drive. Nadpisanie zostało zatrzymane; porównaj wersje ponownie.');
-        // Never overwrite another device's head. Web Locks serialize this device's tabs.
+        // Fresh manifest/hash/version checks run immediately before this update. Keep the
+        // HTTP precondition when the browser exposes ETag, but do not block Drive v3
+        // clients that expose its monotonically increasing version only.
         await this.request('upload/drive/v3/files/' + encodeURIComponent(ownFiles[0].id) + '?uploadType=media', {
           method: 'PATCH', headers: { 'Content-Type': 'application/json', ...(ownFiles[0].etag ? { 'If-Match': ownFiles[0].etag } : {}) }, body: content });
         return;
