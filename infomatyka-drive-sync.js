@@ -1,7 +1,7 @@
 /* InfoMatyka: private, browser-only Google Drive synchronization (schema 3).
  * OAuth access survives navigation in tab-scoped sessionStorage until Google expiry.
  * Each device writes its own head; no client secrets or refresh tokens are used.
- * Vector clocks detect simultaneous changes; conflicts require a user decision.
+ * Vector clocks detect simultaneous changes; the user chooses one global action.
  */
 (function (root) {
   'use strict';
@@ -9,7 +9,7 @@
   const DATA_REGISTRY = root.InfoMatykaDataRegistry || (typeof module !== 'undefined' && module.exports ? require('./infomatyka-data-registry.js') : null);
   const MERGE_CORE = root.InfoMatykaThreeWayMerge || (typeof module !== 'undefined' && module.exports ? require('./infomatyka-three-way-merge.js') : null);
   if (!DATA_REGISTRY || !MERGE_CORE) throw new Error('Nie załadowano centralnego rejestru ani modułu three-way merge.');
-  const MODULE_VERSION = '3.0.0';
+  const MODULE_VERSION = '4.0.0';
   const SYNC_SCHEMA = 3;
   const BOARD_SCHEMA = 4;
   const BOARD_DB_VERSION = 4;
@@ -46,6 +46,14 @@
       delete result.stats.totalXp;
     }
     return result;
+  }
+  function progressBaseline(state, events) {
+    if (!object(state)) return 0;
+    const storedBaseline = Number(state.xpBaseline);
+    if (state.xpBaseline !== undefined && state.xpBaseline !== null && state.xpBaseline !== '' && Number.isFinite(storedBaseline)) return storedBaseline;
+    const totalXp = Number(state.xp ?? (state.stats && state.stats.totalXp)) || 0;
+    const eventXp = Array.isArray(events) ? events.reduce((total, event) => total + (Number(event.deltaXp) || 0), 0) : 0;
+    return totalXp - eventXp;
   }
   function restoreTombstones(current, base) {
     if (Array.isArray(current) && Array.isArray(base)) {
@@ -248,44 +256,6 @@
       });
       return this.transaction('readwrite', { ...incoming, assets: rows }, expected);
     }
-    keepBoth(incoming, expected, localBlobs, remoteBlobs) {
-      const makeId = prefix => prefix + '-' + this.crypto.randomUUID();
-      const recoveredFolderId = makeId('folder-recovered');
-      const folderIds = new Map(incoming.folders.map(folder => [folder.id, makeId('folder')]));
-      const boardIds = new Map(incoming.boardIndex.map(board => [board.id, makeId('board')]));
-      const assetIds = new Map(incoming.assets.map(asset => [asset.id, makeId('asset')]));
-      const renameAssetReferences = value => {
-        if (Array.isArray(value)) return value.map(renameAssetReferences);
-        if (!object(value)) return value;
-        return Object.fromEntries(Object.entries(value).map(([key, child]) => [key,
-          key === 'assetId' && assetIds.has(child) ? assetIds.get(child) : renameAssetReferences(child)]));
-      };
-      const recoveredFolders = incoming.folders.map(folder => ({ ...folder, id: folderIds.get(folder.id),
-        parentId: folder.parentId ? folderIds.get(folder.parentId) : recoveredFolderId }));
-      const recoveredIndex = incoming.boardIndex.map(board => ({ ...board, id: boardIds.get(board.id),
-        name: 'Kopia — ' + board.name,
-        folderId: board.folderId ? folderIds.get(board.folderId) : recoveredFolderId }));
-      const recoveredBoards = incoming.boards.map(board => ({ id: boardIds.get(board.id),
-        project: renameAssetReferences(board.project) }));
-      const blobs = new Map([...localBlobs, ...remoteBlobs].map(asset => [asset.id, asset.blob]));
-      const recoveredAssets = incoming.assets.map(asset => {
-        const id = assetIds.get(asset.id), blob = blobs.get(asset.id);
-        if (!(blob instanceof Blob)) throw new Error('Nie udało się przygotować assetu do zachowania obu wersji.');
-        return { ...asset, id, blob };
-      });
-      const allAssetBlobs = new Map(localBlobs.map(asset => [asset.id, asset.blob]));
-      const assets = [...expected.assets.map(asset => ({ ...asset, blob: allAssetBlobs.get(asset.id) })), ...recoveredAssets];
-      if (assets.some(asset => !(asset.blob instanceof Blob))) throw new Error('Lokalna biblioteka zmieniła się. Porównaj wersje ponownie.');
-      const combined = {
-        ...expected,
-        boards: [...expected.boards, ...recoveredBoards],
-        boardIndex: [...expected.boardIndex, ...recoveredIndex],
-        folders: [...expected.folders, { id: recoveredFolderId, name: 'Odzyskane z Google Drive – ' + new Date().toLocaleDateString('pl-PL') }, ...recoveredFolders],
-        assets,
-        meta: expected.meta
-      };
-      return this.transaction('readwrite', combined, expected);
-    }
   }
   async function digest(value, cryptoAPI, enforceLimit = true) {
     const bytes = new TextEncoder().encode(stable(manifestData(value)));
@@ -345,19 +315,48 @@
     return record;
   }
 
-  function mergeCategory(base, local, remote, category, now = Date.now) {
+  function emptyCategoryData(category) {
+    const spec = CATEGORIES[category];
+    const data = { local: Object.fromEntries(spec.keys.map(key => [key, null])) };
+    if (spec.boards) data.boards = Object.fromEntries(BOARD_STORES.map(store => [store, []]));
+    return data;
+  }
+
+  function resolveDriveConflicts(result) {
+    const choices = Object.fromEntries(result.conflicts.map(conflict => [conflict.dataset + ':' + conflict.path, 'remote']));
+    return MERGE_CORE.resolveConflicts(result, choices);
+  }
+
+  function mergeCategory(base, local, remote, category, now = Date.now, options = {}) {
     const spec = CATEGORIES[category], merged = { local: Object.create(null) }, conflicts = [];
     const stats = { addedLocal: 0, addedRemote: 0, updatedLocal: 0, updatedRemote: 0, deleted: 0, conflicts: 0 };
     for (const key of spec.keys) {
       const dataset = DATA_REGISTRY.getByKey(key);
       const isProgressState = dataset.id === 'progress.state';
-      const baselineSource = object(base.local[key]) ? base.local[key] : null;
-      const xpBaseline = Number(baselineSource && (baselineSource.xpBaseline ?? baselineSource.xp) || 0);
+      const baselineState = object(base.local[key]) ? base.local[key] : object(remote.local[key]) ? remote.local[key] : local.local[key];
+      const eventsKey = DATA_REGISTRY.get('progress.events').key;
+      const baselineEvents = object(base.local[key]) ? base.local[eventsKey] : object(remote.local[key]) ? remote.local[eventsKey] : local.local[eventsKey];
+      const xpBaseline = isProgressState ? progressBaseline(baselineState, baselineEvents) : 0;
       const hasProgressStateModel = isProgressState && [base.local[key], local.local[key], remote.local[key]].some(value =>
         object(value) && (has(value, 'xp') || has(value, 'xpBaseline') || object(value.stats) && has(value.stats, 'totalXp')));
-      const mergeBase = isProgressState ? withoutDerivedProgress(base.local[key]) : base.local[key];
-      const mergeLocal = isProgressState ? withoutDerivedProgress(local.local[key]) : local.local[key];
-      const mergeRemote = isProgressState ? withoutDerivedProgress(remote.local[key]) : remote.local[key];
+      let mergeBase = base.local[key], mergeLocal = local.local[key], mergeRemote = remote.local[key];
+      if (options.emptyBaseline) {
+        const values = [mergeBase, mergeLocal, mergeRemote];
+        if (['entity-three-way', 'event-union', 'set-union'].includes(dataset.syncStrategy) && values.some(Array.isArray)) {
+          mergeBase = Array.isArray(mergeBase) ? mergeBase : [];
+          mergeLocal = Array.isArray(mergeLocal) ? mergeLocal : [];
+          mergeRemote = Array.isArray(mergeRemote) ? mergeRemote : [];
+        } else if (values.some(object)) {
+          mergeBase = object(mergeBase) ? mergeBase : {};
+          mergeLocal = object(mergeLocal) ? mergeLocal : {};
+          mergeRemote = object(mergeRemote) ? mergeRemote : {};
+        }
+      }
+      if (isProgressState) {
+        mergeBase = withoutDerivedProgress(mergeBase);
+        mergeLocal = withoutDerivedProgress(mergeLocal);
+        mergeRemote = withoutDerivedProgress(mergeRemote);
+      }
       const result = MERGE_CORE.mergeThreeWay(mergeBase, mergeLocal, mergeRemote, {
         dataset: dataset.id, strategy: dataset.syncStrategy, now
       });
@@ -610,22 +609,24 @@
       const base = checkpoint ? { ...checkpoint, data: baseData } : null;
       const baseCorrupt = !!checkpoint && (!baseData || await this.hash(baseData) !== checkpoint.hash);
       let mergePreview = null, remoteData = null, action;
-      if (duplicateDevices.length || baseCorrupt) action = 'conflict';
-      else if (baseData && cloud.length) {
+      if (cloud.length) {
+        const hasUsableBase = !!baseData && !baseCorrupt;
+        const mergeBase = hasUsableBase ? baseData : emptyCategoryData(category);
+        const mergeOptions = { emptyBaseline: !hasUsableBase };
         remoteData = manifestData(cloud[0].data);
         const remoteConflicts = [];
         for (const record of cloud.slice(1)) {
-          const remoteMerge = mergeCategory(baseData, remoteData, manifestData(record.data), category);
-          remoteData = remoteMerge.merged;
+          const remoteMerge = mergeCategory(mergeBase, remoteData, manifestData(record.data), category, Date.now, mergeOptions);
+          remoteData = resolveDriveConflicts(remoteMerge).merged;
           remoteConflicts.push(...remoteMerge.conflicts);
         }
-        mergePreview = mergeCategory(baseData, manifestData(local), remoteData, category);
+        mergePreview = mergeCategory(mergeBase, manifestData(local), remoteData, category, Date.now, mergeOptions);
         mergePreview.conflicts.unshift(...remoteConflicts);
         mergePreview.stats.conflicts = mergePreview.conflicts.length;
         const mergedHash = await this.hash(mergePreview.merged);
         const remoteHash = await this.hash(remoteData);
         mergePreview.hash = mergedHash;
-        action = mergePreview.conflicts.length ? 'conflict' :
+        action = duplicateDevices.length || baseCorrupt || mergePreview.conflicts.length ? 'conflict' :
           mergedHash === localHash && mergedHash === remoteHash ? 'same' :
           mergedHash === localHash ? 'push' : mergedHash === remoteHash ? 'pull' : 'merge';
       } else action = decide(localHash, cloud, base, empty(local));
@@ -643,7 +644,7 @@
         folders: local.boards.folders.filter(row => !isDeletedRow(row)).length,
         assets: local.boards.assets.filter(row => !isDeletedRow(row)).length,
         assetBytes: local.boards.assets.reduce((sum, asset) => sum + (isDeletedRow(asset) ? 0 : asset.size), 0) } : null;
-      return { category, action, local, localHash, signature, cloud, files, base, mergePreview, remoteData, duplicateDevices, fileCount: files.length,
+      return { category, action, local, localHash, signature, cloud, files, base, mergePreview, remoteData, duplicateDevices, baseCorrupt, fileCount: files.length,
         localVersion: { bytes: byteSize(local), uploadBytes, savedAt, empty: empty(local), counts: localCounts,
           device: this.device, vector: base && object(base.vector) ? base.vector : { [this.device]: 0 } } };
     }
@@ -706,47 +707,47 @@
       if (!resolution) return review;
       if (resolution.signature !== signature || resolution.localHash !== localHash) return { ...review, action: 'conflict' };
       const source = resolution.source;
-      if (!['merge', 'resolve', 'local', 'cloud'].includes(source)) return { ...review, action: 'conflict' };
-      if (source === 'merge' && ((review.mergePreview && review.mergePreview.conflicts.length) ||
-          (!review.mergePreview && !['push', 'pull'].includes(review.action)) || ['same', 'none', 'conflict'].includes(review.action))) {
+      if (!['merge', 'local', 'cloud'].includes(source)) return { ...review, action: 'conflict' };
+      if (source === 'merge' && ((!review.mergePreview && !(cloud.length === 0 && review.action === 'push')) ||
+          review.baseCorrupt || ['same', 'none'].includes(review.action))) {
         return { ...review, action: 'conflict' };
       }
-      if (source === 'resolve' && (!review.mergePreview || !review.mergePreview.conflicts.length)) return { ...review, action: 'conflict' };
-      if (source === 'local' && !['push', 'merge', 'conflict'].includes(review.action)) return { ...review, action: 'conflict' };
-      if (source === 'cloud' && !cloud.length) return { ...review, action: 'conflict' };
+      if (source === 'local' && ['same', 'none'].includes(review.action)) return { ...review, action: 'conflict' };
       if (review.action === 'same' || review.action === 'none') return { category, action: review.action };
 
-      let action = source === 'merge' ? review.action : source === 'resolve' ? 'merge' : source === 'local' ? 'push' : 'pull';
-      const chosen = source === 'cloud' ? cloud.find(record => record.fileId === resolution.fileId) :
-        action === 'pull' ? cloud[0] : null;
-      if (source === 'cloud' && !chosen) return { ...review, action: 'conflict' };
+      const action = source === 'merge' ? 'merge' : source === 'local' ? 'push' : 'pull';
       const ownFile = files.find(file => file.appProperties.device === this.device);
       const ownFiles = ownFile ? [ownFile] : [];
-      if (action !== 'pull' && !ownFiles.length && files.length >= MAX_FILES) throw new Error('Osiągnięto limit 100 plików urządzeń. Nowe urządzenie nie może dodać zapisu w tej kategorii.');
+      if ((action !== 'pull' || source === 'cloud') && !ownFiles.length && files.length >= MAX_FILES) throw new Error('Osiągnięto limit 100 plików urządzeń. Nowe urządzenie nie może dodać zapisu w tej kategorii.');
       if (await this.hash(await this.capture(category)) !== localHash) throw new Error('Dane lokalne zmieniły się w trakcie synchronizacji. Spróbuj ponownie.');
       let vector = mergeClocks([...cloud.map(r => r.vector), ...(base && object(base.vector) ? [base.vector] : [])]);
       let incoming;
       let mergeResult = review.mergePreview;
-      if (source === 'resolve') mergeResult = MERGE_CORE.resolveConflicts(review.mergePreview, resolution.choices);
-      if ((source === 'merge' || source === 'resolve') && mergeResult) {
+      if (source === 'merge' && mergeResult) {
+        if (mergeResult.conflicts.length) mergeResult = resolveDriveConflicts(mergeResult);
         incoming = { ...manifestData(mergeResult.merged), boardAssetBlobs: local.boardAssetBlobs || [] };
         incoming = await this.prepareBoardAssets(incoming, this.onProgress, local.boardAssetBlobs || []);
+      } else if (source === 'merge' && action === 'merge') {
+        incoming = local;
+      } else if (source === 'cloud') {
+        incoming = await this.prepareBoardAssets(review.remoteData || emptyCategoryData(category), this.onProgress, local.boardAssetBlobs || []);
       } else if (action === 'pull') {
-        incoming = await this.prepareBoardAssets(chosen.data, this.onProgress);
-        vector = { ...chosen.vector };
+        incoming = await this.prepareBoardAssets((review.remoteData || cloud[0].data), this.onProgress, local.boardAssetBlobs || []);
       } else incoming = local;
 
       const nextHash = await this.hash(incoming);
-      if (source !== 'merge' && action === 'push') {
-        for (const remote of cloud) await this.backup(category, await this.prepareBoardAssets(remote.data), 'Google Drive przed wysłaniem wersji lokalnej');
-      }
-      await this.backup(category, local, 'Dane lokalne przed synchronizacją');
-      if (source === 'merge') {
-        for (const remote of cloud) await this.backup(category, await this.prepareBoardAssets(remote.data, null, local.boardAssetBlobs || []), 'Google Drive przed merge');
+      if (!resolution.skipBackup) {
+        if (cloud.length) {
+          const remoteBackup = await this.prepareBoardAssets(review.remoteData || cloud[0].data, null, local.boardAssetBlobs || []);
+          await this.backup(category, remoteBackup, 'Google Drive przed zmianą');
+        }
+        await this.backup(category, local, 'Dane lokalne przed synchronizacją');
       }
       await this.assertReviewUnchanged(review);
 
-      if (action !== 'pull') {
+      // A deliberate download also publishes a new head on this device. Its clock
+      // dominates every prior head so the chosen snapshot becomes the shared baseline.
+      if (action !== 'pull' || source === 'cloud') {
         vector[this.device] = (vector[this.device] || 0) + 1;
         const record = { app: 'InfoMatyka', schema: SYNC_SCHEMA,
           ...(CATEGORIES[category].boards ? { boardSchema: BOARD_SCHEMA } : {}), category,
@@ -768,14 +769,6 @@
       }
       return { category, action };
     }
-    async keepBothBoards(review, remoteRecord) {
-      if (!remoteRecord || review.category !== 'boards') throw new Error('Nie wybrano chmurowej wersji tablic.');
-      await this.assertReviewUnchanged(review);
-      const incoming = await this.prepareBoardAssets(remoteRecord.data, this.onProgress);
-      await this.assertReviewUnchanged(review);
-      await this.backup('boards', review.local, 'Lokalnie przed zachowaniem obu wersji');
-      await this.boards.keepBoth(incoming.boards, review.local.boards, review.local.boardAssetBlobs, incoming.boardAssetBlobs);
-    }
   }
   // Export the actual engine for deterministic integration tests, without initializing browser UI.
   if (typeof module !== 'undefined' && module.exports) {
@@ -788,40 +781,38 @@
   const SESSION_KEY = 'infomatyka-sync-session';
   const EDIT_PREFIX = 'infomatyka-sync-edit-';
   const HYDRATION_PREFIX = 'infomatyka-sync-hydration-';
+  const SYNC_CATEGORIES = Object.keys(CATEGORIES);
   const tabId = root.crypto.randomUUID ? root.crypto.randomUUID() : 'tab-' + Date.now() + '-' + Math.random().toString(36).slice(2);
   const keyCategory = new Map(Object.entries(CATEGORIES).flatMap(([category, spec]) => spec.keys.map(key => [key, category])));
   const internalWrites = new Set(), loadedEpochs = Object.create(null), previousEpochs = Object.create(null);
   Object.keys(CATEGORIES).forEach(category => { loadedEpochs[category] = root.localStorage.getItem(HYDRATION_PREFIX + category); });
-  let backgroundRunning = false, backgroundTimer = null, pageEdited = false, needsReload = false, refreshTimer = null;
-  let previousInert = false, applyingInBackground = false, backgroundState = null, preparePromise = null;
+  let pageEdited = false, needsReload = false, refreshTimer = null, preparePromise = null;
   let sessionRequest = null, connectionChannel = null;
-  const GROUPS = [
-    { label: 'Konto i postępy', detail: 'Profil, dostępność, XP, odznaki, nauka i ulubione', categories: ['profile', 'progress', 'learning', 'favorites'] },
-    { label: 'Generator i materiały', detail: 'Zestawy, własne zadania, projekty i materiały', categories: ['generator', 'materials'] },
-    { label: 'Klasy i planowanie', detail: 'Dziennik, organizacja miejsc, raporty, wydarzenia, dyżury i dostosowania SPE', categories: ['teacher', 'organizer', 'calendar', 'duty', 'spe'] },
-    { label: 'Tablice interaktywne', detail: 'Tablice, obrazy, foldery i powiązania', categories: ['boards'] }
-  ];
   let token = null, account = null, ready = false, busy = false, authorizing = false, client = null, gisPromise = null;
-  let engine, backupStore, baseStore, comparisons = [], recovery = [], panel, notice = '', upgradeNotice = '', applied = false, afterAuth = null, pendingDirection = null;
+  let engine, backupStore, baseStore, comparisons = [], recovery = [], operationErrors = [], panel, notice = '', applied = false, afterAuth = null, pendingDirection = null;
   let recoveryAccountSelection = '';
   let progressMessage = '';
-  let cloudChoices = Object.create(null);
-  let conflictChoices = Object.create(null);
-  let prefs = { selected: Object.keys(CATEGORIES), selectionVersion: 3, syncMode: 'check-only', connectionActive: true, boundAccount: '', accountEmail: '', lastCheckAt: '' };
+  let prefs = { connectionActive: true, boundAccount: '', accountEmail: '', deviceName: '' };
   try {
     const current = root.localStorage.getItem(SETTINGS_KEY);
     const stored = JSON.parse(current || '{}');
-    const { background, automatic, fetchLatest, lastSync, ...savedPreferences } = stored;
-    prefs = { ...prefs, ...savedPreferences, syncMode: ['manual', 'check-only'].includes(savedPreferences.syncMode) ? savedPreferences.syncMode : prefs.syncMode };
-    if (stored.selectionVersion !== 3) prefs.selected = Object.keys(CATEGORIES);
-    prefs.selectionVersion = 3;
+    prefs = { ...prefs,
+      connectionActive: stored.connectionActive !== false,
+      boundAccount: typeof stored.boundAccount === 'string' ? stored.boundAccount : '',
+      accountEmail: typeof stored.accountEmail === 'string' ? stored.accountEmail : '',
+      deviceName: typeof stored.deviceName === 'string' ? stored.deviceName : '' };
   } catch (_) { }
-  prefs.selected = Array.isArray(prefs.selected) ? prefs.selected.filter(k => has(CATEGORIES, k)) : Object.keys(CATEGORIES);
-  prefs.selectionVersion = 3;
   const config = root.InfoMatykaDriveConfig || {};
   const configured = typeof config.clientId === 'string' && /^[\w-]+\.apps\.googleusercontent\.com$/.test(config.clientId);
   const connected = () => !!token && Date.now() < token.expiresAt && !!account;
-  function savePrefs() { prefs.preferenceSchema = 3; root.localStorage.setItem(SETTINGS_KEY, JSON.stringify(prefs)); }
+  function savePrefs() { prefs.preferenceSchema = 4; root.localStorage.setItem(SETTINGS_KEY, JSON.stringify(prefs)); }
+  function mergeSavedPrefs(saved) {
+    prefs = { ...prefs,
+      connectionActive: saved.connectionActive !== false,
+      boundAccount: typeof saved.boundAccount === 'string' ? saved.boundAccount : '',
+      accountEmail: typeof saved.accountEmail === 'string' ? saved.accountEmail : '',
+      deviceName: typeof saved.deviceName === 'string' ? saved.deviceName : '' };
+  }
   function categoryStateKey(category) { return STATE_PREFIX + (prefs.boundAccount || 'unbound') + '-' + category; }
   function categoryState(category) {
     const defaults = { localDirty: false, remoteChanged: false, lastSyncedHash: null, lastSyncedVector: null,
@@ -878,7 +869,6 @@
     root.dispatchEvent(new Event('infomatyka-boards-changed'));
     if (root.BroadcastChannel) { const channel = new root.BroadcastChannel('infomatyka_boards'); channel.postMessage('changed'); channel.close(); }
   }
-  function connectionNotice(fallback) { if (!upgradeNotice) return fallback; const message = upgradeNotice; upgradeNotice = ''; return message; }
   function clearSession() { try { root.sessionStorage.removeItem(SESSION_KEY); } catch (_) { } }
   function saveSession() {
     try { root.sessionStorage.setItem(SESSION_KEY, JSON.stringify({ token, clientId: config.clientId, accountId: account.permissionId })); } catch (_) { }
@@ -898,16 +888,18 @@
   }
   const transport = new DriveTransport(root.fetch.bind(root), () => token, () => { token = null; clearSession(); });
   function disconnect(persist = true) {
-    token = null; account = null; engine = null; comparisons = []; recovery = []; afterAuth = null;
+    token = null; account = null; engine = null; comparisons = []; recovery = []; operationErrors = []; pendingDirection = null; afterAuth = null;
     prefs.connectionActive = false; if (persist) savePrefs(); clearSession();
-    clearTimeout(backgroundTimer); backgroundState = null; needsReload = false;
+    needsReload = false;
     Object.keys(CATEGORIES).forEach(category => { loadedEpochs[category] = root.localStorage.getItem(HYDRATION_PREFIX + category); });
     notice = 'Odłączono na tym urządzeniu. Dane na Drive pozostają zachowane.'; render();
   }
   function initializeAccount(user) {
-    try { const latest = JSON.parse(root.localStorage.getItem(SETTINGS_KEY)); if (latest && (!latest.boundAccount || latest.boundAccount === user.permissionId)) prefs = { ...prefs, ...latest }; } catch (_) { }
-    account = user; recoveryAccountSelection = user.permissionId; comparisons = []; recovery = []; cloudChoices = Object.create(null);
-    backgroundState = null;
+    try {
+      const latest = JSON.parse(root.localStorage.getItem(SETTINGS_KEY));
+      if (latest && (!latest.boundAccount || latest.boundAccount === user.permissionId)) mergeSavedPrefs(latest);
+    } catch (_) { }
+    account = user; recoveryAccountSelection = user.permissionId; comparisons = []; recovery = []; operationErrors = []; pendingDirection = null;
     prefs.boundAccount = user.permissionId; prefs.accountEmail = user.emailAddress || ''; prefs.connectionActive = true; savePrefs(); saveSession();
     const device = root.localStorage.getItem(DEVICE_KEY) || root.crypto.randomUUID();
     root.localStorage.setItem(DEVICE_KEY, device);
@@ -927,9 +919,6 @@
         internalWrites.add(category); previousEpochs[category] = root.localStorage.getItem(HYDRATION_PREFIX + category);
         const epoch = JSON.stringify({ tab: tabId, at: Date.now(), account: user.permissionId, done: false });
         loadedEpochs[category] = epoch; root.localStorage.setItem(HYDRATION_PREFIX + category, epoch);
-        if (backgroundRunning && !panel && root.document.body && !applyingInBackground) {
-          previousInert = root.document.body.inert; root.document.body.inert = true; applyingInBackground = true;
-        }
       },
       onApplyEnd: (category, succeeded) => {
         if (!succeeded) {
@@ -943,7 +932,7 @@
         internalWrites.delete(category);
       },
       onApplied: category => {
-        applied = true; if (backgroundRunning && !panel) needsReload = true;
+        applied = true; if (!panel) needsReload = true;
         if (category === 'progress') root.dispatchEvent(new Event('infomatyka_progress_updated'));
         root.dispatchEvent(new CustomEvent('infomatyka_drive_applied', { detail: { category } }));
       },
@@ -968,11 +957,10 @@
         if (!root.confirm('Wybrano inne konto Google: ' + (user.emailAddress || user.displayName) + '. Dane lokalne mogą należeć do poprzedniego konta. Kontynuować?')) { disconnect(); return; }
       }
       initializeAccount(user);
-      notice = connectionNotice('Połączono. Wybierz zakres i kliknij „Synchronizuj”.');
+      notice = 'Połączono. Kliknij „Synchronizuj”, aby sprawdzić wszystkie dane.';
     } catch (e) { token = null; account = null; engine = null; clearSession(); notice = e.message; }
     finally { authorizing = false; render(); }
-    if (connected() && prefs.selected.length && continuation) await synchronize();
-    if (connected() && prefs.syncMode === 'check-only') scheduleBackground(2000);
+    if (connected() && continuation) await synchronize();
   }
   async function prepareRuntime() {
     if (!configured) { render(); return; }
@@ -996,12 +984,11 @@
         try {
           const user = await identifyAccount();
           if (user.permissionId !== saved.accountId) throw new Error('Konto Google zmieniło się. Połącz ponownie.');
-          initializeAccount(user); notice = connectionNotice('Połączenie zachowane. Kliknij „Synchronizuj”, aby sprawdzić dane.');
+          initializeAccount(user); notice = 'Połączenie zachowane. Kliknij „Synchronizuj”, aby sprawdzić dane.';
         } catch (e) { token = null; account = null; engine = null; clearSession(); notice = e.message; }
         finally { authorizing = false; }
       } else clearSession();
       render();
-      if (connected() && prefs.syncMode === 'check-only') scheduleBackground(2000);
     } catch (e) { notice = e.message; render(); }
   }
   function prepare() { if (!preparePromise) preparePromise = prepareRuntime(); return preparePromise; }
@@ -1028,7 +1015,7 @@
   }
   function markEditing(event) {
     const target = event.target;
-    if (!target || !target.closest || target.closest('#infomatyka-drive-settings, #infomatyka-drive-refresh, #infomatyka-drive-background-status')) return;
+    if (!target || !target.closest || target.closest('#infomatyka-drive-settings, #infomatyka-drive-refresh, #infomatyka-drive-indicator')) return;
     if (event.type === 'pointerdown' && !target.closest('button, canvas, [contenteditable="true"], input, textarea, select')) return;
     pageEdited = true; renewEditLease();
   }
@@ -1037,7 +1024,7 @@
   }
   function guardWrite(category) {
     if (!category || internalWrites.has(category) || checkEpoch(category)) return;
-    needsReload = true; renderBackgroundStatus();
+    needsReload = true; renderConnectionStatus();
     const error = new Error('Dane zostały wczytane z Google Drive w innej karcie. Odśwież tę stronę przed dalszym zapisem.'); error.code = 'DRIVE_RELOAD_REQUIRED'; throw error;
   }
   function guardBoardWrite() {
@@ -1048,7 +1035,6 @@
     if (!category || internalWrites.has(category)) return;
     recordLocalChange(category);
     if (connectionChannel) connectionChannel.postMessage({ type: 'local-change', accountId: prefs.boundAccount });
-    if (prefs.syncMode === 'check-only') scheduleBackground(2500);
   }
   function installObservers() {
     const proto = root.Storage && root.Storage.prototype;
@@ -1084,12 +1070,12 @@
     root.addEventListener('infomatyka-boards-changed', () => localChanged('boards'));
     root.addEventListener('infomatyka_progress_updated', () => localChanged('progress'));
     root.addEventListener('offline', render);
-    root.addEventListener('online', () => { render(); scheduleBackground(1000); });
+    root.addEventListener('online', render);
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') { renewEditLease(); if (needsReload && !pageEdited) scheduleRefresh(); else scheduleBackground(1000); }
+      if (document.visibilityState === 'visible') { renewEditLease(); if (needsReload && !pageEdited) scheduleRefresh(); }
     });
     root.addEventListener('pagehide', () => {
-      clearTimeout(backgroundTimer); clearTimeout(refreshTimer);
+      clearTimeout(refreshTimer);
       try { root.localStorage.removeItem(EDIT_PREFIX + tabId); } catch (_) { }
     });
     try {
@@ -1097,20 +1083,16 @@
         connectionChannel = new root.BroadcastChannel('infomatyka_boards');
         connectionChannel.onmessage = event => {
           const message = event.data;
-          if (message === 'changed') { if (prefs.syncMode === 'check-only') scheduleBackground(2500); return; }
+          if (message === 'changed') return;
           if (!object(message)) return;
           if (message.type === 'session-request' && connected() && prefs.connectionActive && message.accountId === account.permissionId && message.clientId === config.clientId) {
             connectionChannel.postMessage({ type: 'session-response', nonce: message.nonce, token, accountId: account.permissionId, clientId: config.clientId });
           } else if (message.type === 'session-response' && sessionRequest && message.nonce === sessionRequest.nonce && message.accountId === prefs.boundAccount && message.clientId === config.clientId) {
             sessionRequest.accept(message);
-          } else if (message.type === 'local-change' && message.accountId === prefs.boundAccount && prefs.syncMode === 'check-only') scheduleBackground(2500);
+          }
         };
       }
     } catch (_) { }
-  }
-  function scheduleBackground(delay = 2500) {
-    if (prefs.syncMode !== 'check-only' || prefs.scopePending || prefs.reviewPending || !prefs.connectionActive || !connected() || !engine || needsReload || root.navigator.onLine === false) return;
-    clearTimeout(backgroundTimer); backgroundTimer = setTimeout(() => { backgroundTimer = null; syncInBackground(); }, delay);
   }
   function scheduleRefresh() {
     if (panel || pageEdited || !needsReload || document.visibilityState !== 'visible') return;
@@ -1123,60 +1105,24 @@
       if (!pageEdited && needsReload) root.location.reload();
     }, 250);
   }
-  async function syncInBackground() {
-    if (busy || authorizing || prefs.syncMode !== 'check-only' || prefs.scopePending || prefs.reviewPending || !prefs.connectionActive || !connected() || !engine || needsReload || !prefs.selected.length || document.visibilityState !== 'visible' || root.navigator.onLine === false) return;
-    busy = true; backgroundRunning = true; render();
-    try {
-      await root.navigator.locks.request('infomatyka-drive-sync-v1', { ifAvailable: true }, async lock => {
-        if (!lock) return;
-        const latest = JSON.parse(root.localStorage.getItem(SETTINGS_KEY) || '{}');
-        if (latest.syncMode !== 'check-only' || latest.scopePending || latest.reviewPending || latest.connectionActive === false || latest.boundAccount !== account.permissionId) return;
-        const selected = prefs.selected.filter(category => (latest.selected || []).includes(category));
-        const results = await inspectAll(selected);
-        const errors = [], differences = [];
-        results.forEach((result, index) => {
-          if (result.error) errors.push({ category: selected[index], message: result.error });
-          else if (differs(result)) differences.push(result.category);
-        });
-        backgroundState = { account: latest.boundAccount, checkedAt: new Date().toISOString(), differences, errors };
-        if (panel && differences.length) {
-          comparisons = results; cloudChoices = Object.create(null); notice = 'Wykryto zmiany. Sprawdź porównanie i wybierz, co zrobić.';
-        } else if (panel && errors.length) comparisons = results;
-      });
-    } catch (e) { backgroundState = { account: prefs.boundAccount, checkedAt: new Date().toISOString(), differences: [], errors: [{ message: e.message }] }; }
-    finally {
-      busy = false; backgroundRunning = false;
-      if (applyingInBackground && root.document.body) { root.document.body.inert = previousInert; applyingInBackground = false; }
-      render(); if (needsReload) scheduleRefresh();
-    }
-  }
   function driveStatus(message, state = 'warning') { return { message, state }; }
-  function backgroundStatus() {
+  function connectionStatus() {
     if (needsReload) return driveStatus('Drive: odśwież widok po pobraniu danych');
     if (!prefs.connectionActive) return null;
     if (notice && !ready && !connected()) return driveStatus('Drive: ' + notice, authorizing ? 'syncing' : 'error');
     if (root.navigator.onLine === false) return driveStatus('Drive: offline — dane pozostają lokalnie', 'offline');
     if (!connected()) return prefs.accountEmail ? driveStatus('Połączenie z Google Drive wygasło. Połącz ponownie.', 'warning') : null;
-    if (prefs.syncMode === 'manual') return driveStatus('Drive: synchronizacja ręczna', 'info');
-    if (prefs.scopePending || prefs.reviewPending) return driveStatus('Drive: dokończ wybór synchronizacji w ustawieniach');
-    if (backgroundState && backgroundState.differences && backgroundState.differences.length) return driveStatus('Drive: są zmiany do porównania w ustawieniach');
-    if (root.navigator.onLine === false) return driveStatus('Drive: offline — dane pozostają lokalnie', 'offline');
-    if (backgroundState && backgroundState.errors && backgroundState.errors.length) return driveStatus('Drive: nie udało się sprawdzić zmian', 'error');
-    if (backgroundRunning) return driveStatus('Drive: sprawdzanie zmian…', 'syncing');
-    return backgroundState && backgroundState.checkedAt ?
-      driveStatus('Drive: dane sprawdzone\n' + formatDate(backgroundState.checkedAt), 'success') :
-      driveStatus('Drive: synchronizacja w tle włączona', 'info');
+    return driveStatus('Drive połączony · synchronizacja ręczna', 'info');
   }
-  function backgroundMessage() { const status = backgroundStatus(); return status ? status.message : ''; }
-  function renderBackgroundStatus() {
+  function renderConnectionStatus() {
     if (!root.InfoMatykaDriveIndicator) return;
-    const status = backgroundStatus();
+    const status = connectionStatus();
     if (!status || panel) root.InfoMatykaDriveIndicator.hide();
     else root.InfoMatykaDriveIndicator.show(status);
   }
   function beginConnect(changeAccount = false, continuation = null) {
     if (!ready || busy || authorizing) return;
-    token = null; account = null; engine = null; clearSession(); comparisons = []; recovery = []; cloudChoices = Object.create(null);
+    token = null; account = null; engine = null; clearSession(); comparisons = []; recovery = []; operationErrors = []; pendingDirection = null;
     afterAuth = continuation; authorizing = true; notice = 'Łączenie z Google Drive…'; render();
     try {
       client.requestAccessToken({ prompt: changeAccount || !prefs.accountEmail ? 'select_account' : '',
@@ -1184,81 +1130,94 @@
     } catch (e) { authorizing = false; afterAuth = null; notice = e.message; render(); }
   }
   const differs = review => !review.error && !['same', 'none'].includes(review.action);
-  function chosenCloud(review) {
-    if (!review.cloud.length) return null;
-    const hashes = new Set(review.cloud.map(record => record.hash));
-    if (hashes.size === 1) return review.cloud[0];
-    return review.cloud.find(record => record.fileId === cloudChoices[review.category]) || null;
-  }
-  async function inspectAll(selected, verifyBoardAssets = false) {
-    // Independent categories are read together; changing a checkbox never calls this.
-    const results = await Promise.allSettled(selected.map(category => engine.inspect(category, { verifyBoardAssets })));
-    const reviews = results.map((result, index) => result.status === 'fulfilled' ? result.value : { category: selected[index], error: result.reason.message });
+  async function inspectAll(verifyBoardAssets = false) {
+    const results = await Promise.allSettled(SYNC_CATEGORIES.map(category => engine.inspect(category, { verifyBoardAssets })));
+    const reviews = results.map((result, index) => result.status === 'fulfilled' ? result.value : { category: SYNC_CATEGORIES[index], error: result.reason.message });
     recordInspectionState(reviews);
     return reviews;
   }
+  async function backupBeforeGlobalAction(reviews) {
+    const prepared = [];
+    for (const review of reviews) {
+      const remoteData = review.remoteData || (review.cloud[0] && review.cloud[0].data);
+      const remoteBackup = remoteData ? await engine.prepareBoardAssets(remoteData, null, review.local.boardAssetBlobs || []) : null;
+      prepared.push({ review, remoteBackup });
+    }
+    for (const { review, remoteBackup } of prepared) {
+      await engine.backup(review.category, review.local, 'Lokalnie przed synchronizacją wszystkich danych');
+      if (remoteBackup) await engine.backup(review.category, remoteBackup, 'Google Drive przed synchronizacją wszystkich danych');
+    }
+  }
   async function synchronize(source = null) {
-    if (busy || authorizing || !prefs.selected.length) return;
+    if (busy || authorizing) return;
     if (!connected() || !engine) { beginConnect(false, { synchronize: true }); return; }
-    clearTimeout(backgroundTimer);
-    prefs.scopePending = false; prefs.reviewPending = true; savePrefs();
-    const selected = [...prefs.selected];
-    const reviewed = comparisons.filter(review => selected.includes(review.category));
     busy = true; progressMessage = ''; notice = source ? 'Zastosowywanie wybranego działania…' : 'Porównywanie danych lokalnych i Google Drive…'; render();
     try {
       await root.navigator.locks.request('infomatyka-drive-sync-v1', async () => {
         const latest = JSON.parse(root.localStorage.getItem(SETTINGS_KEY) || '{}');
-        if (latest.boundAccount !== account.permissionId || stable(latest.selected) !== stable(selected)) throw new Error('Konto lub zakres zmieniły się w innej karcie. Kliknij „Synchronizuj” ponownie.');
-        const fresh = await inspectAll(selected, true);
+        if (latest.boundAccount !== account.permissionId) throw new Error('Konto zmieniło się w innej karcie. Sprawdź synchronizację ponownie.');
+        const fresh = await inspectAll(true);
         if (source) {
-          // Validate the complete comparison before any category is changed.
-          if (fresh.some(review => review.error) || fresh.some(review => {
-            const previous = reviewed.find(item => item.category === review.category);
-            return !previous || previous.localHash !== review.localHash || previous.signature !== review.signature;
-          })) {
-            comparisons = fresh; cloudChoices = Object.create(null);
-            notice = 'Dane zmieniły się od czasu porównania. Sprawdź aktualne różnice i wybierz ponownie.'; return;
+          const previousReviews = new Map(comparisons.map(review => [review.category, review]));
+          const staleReviews = fresh.some(review => {
+            const previous = previousReviews.get(review.category);
+            return review.error || !previous || previous.localHash !== review.localHash || previous.signature !== review.signature;
+          });
+          if (staleReviews) {
+            comparisons = fresh; operationErrors = [];
+            notice = 'Dane zmieniły się od czasu porównania. Sprawdź je ponownie i wybierz działanie jeszcze raz.'; return;
           }
-          const changes = fresh.filter(review => source === 'merge' ? differs(review) && !review.mergePreview?.conflicts.length && review.action !== 'conflict' :
-            source === 'resolve' ? review.action === 'conflict' && (review.mergePreview?.conflicts || []).every(conflict => conflictChoices[review.category + ':' + conflict.dataset + ':' + conflict.path]) :
-            review.action === 'conflict');
-          if (source === 'cloud' && changes.some(review => !chosenCloud(review))) {
-            comparisons = fresh; notice = 'Wybierz wersję Drive w kategoriach z równoległymi zmianami.'; return;
+          if (fresh.some(review => review.duplicateDevices.length)) {
+            comparisons = fresh; operationErrors = fresh.filter(review => review.duplicateDevices.length)
+              .map(review => CATEGORIES[review.category].label + ': kilka zapisów dla tego samego urządzenia.');
+            notice = 'Wykryto niejednoznaczne kopie na Google Drive. Operacja została wstrzymana, aby chronić dane. Szczegóły są niżej.'; return;
           }
-          const failures = []; let stale = false;
+          if (source === 'merge' && fresh.some(review => review.baseCorrupt || !review.mergePreview && review.cloud.length)) {
+            comparisons = fresh; operationErrors = fresh.filter(review => review.baseCorrupt || !review.mergePreview && review.cloud.length)
+              .map(review => CATEGORIES[review.category].label + ': brakuje poprawnej wspólnej bazy do bezpiecznego łączenia.');
+            notice = 'Nie można bezpiecznie połączyć wszystkich danych. Wybierz jedną całą wersję; obie strony zostaną wcześniej skopiowane.'; return;
+          }
+          const changes = fresh.filter(differs);
+          if (!changes.length) {
+            comparisons = fresh; operationErrors = [];
+            notice = 'Wszystkie dane są już zgodne.'; return;
+          }
+          const failures = [];
+          operationErrors = [];
+          await backupBeforeGlobalAction(changes);
           for (const review of changes) {
             try {
               const result = await engine.sync(review.category, {
                 signature: review.signature, localHash: review.localHash,
-                source: source === 'merge' ? 'merge' : source === 'local' ? 'local' : 'cloud',
-                ...(source === 'cloud' ? { fileId: chosenCloud(review).fileId } : {}),
-                ...(source === 'resolve' ? { source: 'resolve', choices: Object.fromEntries((review.mergePreview?.conflicts || []).map(conflict => [
-                  conflict.dataset + ':' + conflict.path, conflictChoices[review.category + ':' + conflict.dataset + ':' + conflict.path]
-                ])) } : {})
+                source,
+                skipBackup: true,
               });
-              if (result.action === 'conflict') stale = true;
-              else if (!['same', 'none'].includes(result.action)) recordSuccessfulSync(review, result, chosenCloud(review));
+              if (result.action === 'conflict') throw new Error('Dane zmieniły się podczas operacji.');
+              if (!['same', 'none'].includes(result.action)) recordSuccessfulSync(review, result, review.cloud[0] || null);
             } catch (error) {
               root.console?.error('[InfoMatyka Drive] Błąd synchronizacji kategorii „' + review.category + '”', error);
               failures.push(CATEGORIES[review.category].label + ': ' + error.message);
             }
           }
-          comparisons = failures.length || stale ? await inspectAll(selected) : [];
-          cloudChoices = Object.create(null);
-          notice = failures.length ? 'Nie udało się zakończyć wszystkich zmian. ' + failures.join(' ') : stale ?
-            'Część danych zmieniła się podczas synchronizacji. Sprawdź nowe porównanie.' : source === 'merge' ?
-            'Połączono bezpieczne zmiany. Konflikty pozostały bez zmian.' :
-            source === 'resolve' ? 'Zastosowano wybrane wartości. Lokalne i Drive wersje sprzed zmiany zachowano w recovery.' :
-            source === 'local' ? 'Zachowano wybrane lokalne wersje konfliktowych kategorii.' : 'Zachowano wybrane wersje Drive dla konfliktowych kategorii.';
+          comparisons = await inspectAll();
+          const verificationErrors = comparisons.filter(review => review.error)
+            .map(review => CATEGORIES[review.category].label + ': ponowne sprawdzenie nie powiodło się: ' + review.error);
+          operationErrors = failures;
+          notice = failures.length ? 'Nie udało się zakończyć wszystkich zmian. Ukończono ' + (changes.length - failures.length) + ' z ' + changes.length + '. Szczegóły są niżej.' :
+            verificationErrors.length ? 'Zmiany zostały zastosowane, ale nie udało się ponownie sprawdzić wszystkich danych. Szczegóły są niżej.' :
+            source === 'local' ? 'Dane z tego urządzenia wysłano do Google Drive. Kopie obu wersji zapisano lokalnie.' :
+            source === 'cloud' ? 'Pobrano dane z Google Drive. Poprzednie wersje zapisano lokalnie.' :
+            'Połączono zmiany. Przy konflikcie tego samego pola wybrano wersję z Drive; kopie obu wersji zapisano lokalnie.';
         } else {
-          comparisons = fresh; cloudChoices = Object.create(null);
+          comparisons = fresh; operationErrors = fresh.filter(review => review.error)
+            .map(review => CATEGORIES[review.category].label + ': ' + review.error);
           const conflictCount = comparisons.reduce((sum, review) => sum + (review.mergePreview?.conflicts.length || 0), 0);
-          notice = comparisons.some(review => review.error) ? 'Nie udało się porównać wszystkich danych. Szczegóły poniżej.' : comparisons.some(differs) ?
-            'Sprawdzenie ukończone. Bezpieczne zmiany można połączyć; wykryto ' + conflictCount + ' konfliktów wymagających decyzji.' : 'Dane są zgodne; nie trzeba niczego nadpisywać.';
+          notice = operationErrors.length ? 'Nie udało się porównać wszystkich danych. Szczegóły są niżej.' : comparisons.some(differs) ?
+            'Wykryto różnice w ' + comparisons.filter(differs).length + ' z ' + SYNC_CATEGORIES.length + ' obszarów. Wybierz, jak potraktować całość.' :
+            comparisons.every(review => review.localVersion.empty && !review.cloud.length) ? 'Brak danych do synchronizacji. Możesz zacząć na tym urządzeniu.' :
+              'Wszystkie dane są zgodne. Google Drive i to urządzenie mają tę samą wersję.';
+          if (conflictCount) notice += ' Automatyczne łączenie rozwiąże ' + conflictCount + ' nakładających się zmian na korzyść Drive.';
         }
-        prefs = { ...prefs, ...JSON.parse(root.localStorage.getItem(SETTINGS_KEY) || '{}'), lastCheckAt: new Date().toISOString() };
-        prefs.reviewPending = comparisons.some(review => review.error || differs(review));
-        savePrefs();
       });
     } catch (e) { notice = e.message; }
     finally { busy = false; progressMessage = ''; render(); }
@@ -1428,30 +1387,9 @@
       await root.navigator.locks.request('infomatyka-drive-sync-v1', async () => {
         await recoveryEngine.apply(copy.category, copy.data, await recoveryEngine.capture(copy.category), 'Lokalnie przed przywróceniem kopii');
       });
-      recovery = []; comparisons = []; cloudChoices = Object.create(null); notice = 'Przywrócono kopię lokalną. Google Drive nie został zmieniony.';
-      prefs.reviewPending = true; savePrefs();
+      recovery = []; comparisons = []; pendingDirection = null; notice = 'Przywrócono lokalną kopię. Google Drive nie został zmieniony. Sprawdź synchronizację przed kolejną zmianą.';
     } catch (e) { notice = e.message; }
     finally { busy = false; render(); }
-  }
-  async function keepBothBoards() {
-    const review = comparisons.find(item => item.category === 'boards'), remote = review && chosenCloud(review);
-    if (!review || !remote || !connected() || busy) return;
-    busy = true; progressMessage = ''; notice = 'Przygotowywanie odzyskanej kopii…'; render();
-    try {
-      await root.navigator.locks.request('infomatyka-drive-sync-v1', async () => {
-        const current = await engine.inspect('boards');
-        if (current.localHash !== review.localHash || current.signature !== review.signature) {
-          comparisons = await inspectAll(prefs.selected);
-          throw new Error('Dane zmieniły się od czasu porównania. Sprawdź aktualne wersje i wybierz ponownie.');
-        }
-        await engine.keepBothBoards(review, remote);
-        comparisons = await inspectAll(prefs.selected);
-        cloudChoices = Object.create(null);
-        prefs.reviewPending = comparisons.some(item => item.error || differs(item)); savePrefs();
-        notice = 'Zachowano lokalne tablice i kopie wybranej wersji Drive w folderze „Odzyskane z Google Drive”. Google Drive nie został zmieniony.';
-      });
-    } catch (error) { notice = error.message; }
-    finally { busy = false; progressMessage = ''; render(); }
   }
   function button(label, action, disabled = false, className = '') {
     const b = text('button', label, 'im-drive-button ' + className); b.type = 'button'; b.disabled = disabled || busy || authorizing; b.addEventListener('click', action); return b;
@@ -1459,215 +1397,129 @@
   function formatBytes(bytes) {
     return bytes < 1024 ? bytes + ' B' : (bytes / (bytes < 1024 * 1024 ? 1024 : 1024 * 1024)).toLocaleString('pl-PL', { maximumFractionDigits: 2 }) + (bytes < 1024 * 1024 ? ' KiB' : ' MiB');
   }
-  function conflictPathLabel(conflict) {
-    const labels = { name: 'nazwa', title: 'tytuł', note: 'notatka', color: 'kolor', text: 'treść', content: 'treść',
-      date: 'data', startTime: 'godzina rozpoczęcia', endTime: 'godzina zakończenia', order: 'kolejność', grade: 'ocena' };
-    const parts = (conflict.displayPath || conflict.path).split('/').filter(Boolean).map(part => part.replace(/~1/g, '/').replace(/~0/g, '~'));
-    const field = parts[parts.length - 1] || 'cały wpis';
-    const entity = parts.length > 1 ? parts[parts.length - 2] : '';
-    return (entity ? entity + ' · ' : '') + (labels[field] || field);
-  }
-  function conflictValueSummary(value, present) {
-    if (!present) return 'Wartość została usunięta';
-    if (value === null) return 'Brak wartości';
-    if (['string', 'number', 'boolean'].includes(typeof value)) return String(value);
-    if (Array.isArray(value)) return value.length + ' elementów';
-    if (object(value)) {
-      const field = ['name', 'title', 'text', 'content', 'note', 'value'].find(key => typeof value[key] === 'string' || typeof value[key] === 'number');
-      return field ? String(value[field]) : 'Zmieniony wpis';
-    }
-    return 'Brak wartości';
-  }
   function formatDate(value) { return value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString('pl-PL') : 'Data zapisu nieznana'; }
-  function latestDate(values) { return values.filter(value => Number.isFinite(Date.parse(value))).sort((a, b) => Date.parse(b) - Date.parse(a))[0]; }
-  function confirmDirection(source) {
-    pendingDirection = source;
+  function confirmGlobalAction(source) {
+    pendingDirection = { source };
     render();
   }
-  function renderDirectionConfirmation() {
+  function renderGlobalConfirmation() {
     if (!pendingDirection) return null;
+    const { source } = pendingDirection;
     const box = text('section', '', 'im-drive-confirmation');
     box.setAttribute('role', 'alertdialog'); box.setAttribute('aria-live', 'assertive');
-    const includesBoards = prefs.selected.includes('boards');
-    const message = pendingDirection === 'local' ?
-      (includesBoards ? 'Lokalna wersja zastąpi aktualną wersję tego urządzenia na Google Drive. Wersja z Google Drive zostanie wcześniej zachowana jako kopia bezpieczeństwa.' : 'Wybrane dane lokalne zastąpią wersję Google Drive. Przed zmianą zostanie zachowana lokalna kopia bezpieczeństwa.') :
-      (includesBoards ? 'Google Drive zastąpi lokalną bibliotekę tablic na tym urządzeniu. Przed zmianą zostanie utworzona lokalna kopia bezpieczeństwa.' : 'Dane z Google Drive zastąpią wybrane dane lokalne. Przed zmianą zostanie zachowana lokalna kopia bezpieczeństwa.');
-    box.append(text('p', message));
-    const actions = text('div', '', 'im-drive-actions'), choice = pendingDirection;
-    actions.append(button(choice === 'local' ? 'Wyślij wersję lokalną na Google Drive' : 'Pobierz i zastąp', () => {
+    const messages = {
+      cloud: 'Dane zapisane w Google Drive zastąpią na tym urządzeniu wszystkie zsynchronizowane dane. Zbiory nieobecne w Drive zostaną wyczyszczone. Przed zmianą lokalna i chmurowa wersja zostaną skopiowane na to urządzenie.',
+      local: 'Dane z tego urządzenia zastąpią zsynchronizowane dane na Google Drive. Przed zmianą lokalna i chmurowa wersja zostaną skopiowane na to urządzenie.',
+      merge: 'Niezależne zmiany lokalne i z Google Drive zostaną połączone. Jeśli to samo pole zmieniono inaczej, pozostanie wartość z Drive. Przed zmianą obie wersje zostaną skopiowane na to urządzenie.'
+    };
+    box.append(text('p', messages[source]));
+    const actions = text('div', '', 'im-drive-actions');
+    actions.append(button('Potwierdź', () => {
       pendingDirection = null;
-      synchronize(choice);
+      synchronize(source);
     }), button('Anuluj', () => { pendingDirection = null; render(); }, false, 'im-drive-secondary'));
     box.append(actions);
     return box;
   }
   function renderComparison() {
-    const box = text('section', '', 'im-drive-comparison'); box.append(text('h4', 'Porównanie wybranych danych'));
+    const box = text('section', '', 'im-drive-comparison');
+    box.append(text('h4', 'Stan synchronizacji'));
     const valid = comparisons.filter(review => !review.error);
-    const different = valid.filter(differs), remote = valid.flatMap(review => chosenCloud(review) || review.cloud[0] || []);
-    const localBytes = valid.reduce((sum, review) => sum + review.localVersion.bytes, 0);
-    const cloudBytes = remote.reduce((sum, record) => sum + (record.fileBytes || record.bytes), 0);
-    const versions = text('div', '', 'im-drive-versions');
-    const localCard = text('div', '', 'im-drive-version'); localCard.append(text('h5', 'Lokalnie'),
-      text('p', valid.every(review => review.localVersion.empty) ? 'Brak zapisanych danych.' : 'Rozmiar manifestu: ' + formatBytes(localBytes)));
-    const boardReview = valid.find(review => review.category === 'boards');
-    const localDevice = boardReview ? boardReview.localVersion.device : (valid[0]?.localVersion.device || 'nieznane');
-    localCard.append(text('p', 'Urządzenie: ' + (prefs.deviceName || ('Urządzenie ' + localDevice.slice(-4)))),
-      text('p', 'ID urządzenia: ' + localDevice));
-    const localSaved = latestDate(valid.map(review => review.localVersion.savedAt));
-    if (boardReview) {
-      const state = categoryState('boards');
-      const lastBoardDate = state.lastLocalChangeAt || localSaved;
-      localCard.append(text('p', 'Ostatnia zmiana lokalna: ' + (lastBoardDate ? formatDate(lastBoardDate) : 'data zapisu nieznana')),
-        text('p', 'Ostatnie sprawdzenie: ' + (state.lastCheckedAt ? formatDate(state.lastCheckedAt) : 'brak') +
-          ' · ostatnia udana synchronizacja: ' + (state.lastSuccessfulSyncAt ? formatDate(state.lastSuccessfulSyncAt) : 'brak')));
-    } else if (localSaved) localCard.append(text('p', 'Ostatnia data zapisu w rekordach: ' + formatDate(localSaved)));
-    if (boardReview) {
-      const counts = boardReview.localVersion.counts;
-      localCard.append(text('p', `Tablice: ${counts.boards} · foldery: ${counts.folders} · assety: ${counts.assets}`),
-        text('p', 'Rozmiar assetów: ' + formatBytes(counts.assetBytes) + ' · hash: ' + boardReview.localHash),
-        text('p', 'Vector clock: ' + JSON.stringify(boardReview.localVersion.vector)));
-    }
-    const cloudCard = text('div', '', 'im-drive-version'); cloudCard.append(text('h5', 'Na Google Drive'),
-      text('p', remote.length ? 'Rozmiar manifestów: ' + formatBytes(cloudBytes) : 'Brak kopii w chmurze.'),
-      text('p', remote.length ? 'Ostatnia zmiana Drive: ' + formatDate(latestDate(remote.map(record => record.savedAt))) : 'Rozmiar: 0 B'));
-    const cloudBoard = remote.find(record => record.category === 'boards');
-    if (cloudBoard) {
-      const boards = cloudBoard.data.boards;
-      const counts = { boards: boards.boardIndex.filter(row => !row.deletedAt).length, folders: boards.folders.length,
-        assets: boards.assets.length, assetBytes: boards.assets.reduce((sum, asset) => sum + asset.size, 0) };
-      cloudCard.append(text('p', 'Urządzenie źródłowe: ' + (cloudBoard.deviceName || ('Urządzenie ' + cloudBoard.device.slice(-4)))),
-        text('p', 'ID urządzenia: ' + cloudBoard.device),
-        text('p', `Tablice: ${counts.boards} · foldery: ${counts.folders} · assety: ${counts.assets}`),
-        text('p', 'Rozmiar assetów: ' + formatBytes(counts.assetBytes) + ' · hash: ' + cloudBoard.hash),
-        text('p', 'Drive version: ' + (cloudBoard.driveVersion || 'brak') + ' · vector clock: ' + JSON.stringify(cloudBoard.vector)));
-    }
-    versions.append(localCard, cloudCard); box.append(versions);
-    const safeChanges = different.filter(review => ['push', 'pull', 'merge'].includes(review.action) && !review.mergePreview?.conflicts.length);
-    const conflictReviews = different.filter(review => review.action === 'conflict' && review.mergePreview?.conflicts.length);
-    const conflictCount = conflictReviews.reduce((sum, review) => sum + review.mergePreview.conflicts.length, 0);
+    const different = valid.filter(differs);
     const hasComparisonErrors = comparisons.some(review => review.error);
-    box.append(text('p', hasComparisonErrors ? 'Nie wszystkie dane udało się porównać. Szczegóły błędu są poniżej.' : safeChanges.length ? 'Gotowe do połączenia: ' + safeChanges.map(review => CATEGORIES[review.category].label +
-      (review.mergePreview ? ' · ' + (review.mergePreview.stats.addedLocal + review.mergePreview.stats.addedRemote + review.mergePreview.stats.deleted) + ' zmian' : '')).join(' · ') :
-      different.length ? 'Są zmiany wymagające sprawdzenia.' : 'Wersje są zgodne; nie trzeba niczego nadpisywać.', 'im-drive-help'));
-    if (conflictCount) box.append(text('p', 'Konflikty: ' + conflictCount + ' pól wymagają decyzji. Zmiany lokalne i Drive są pokazane osobno; obie wersje zostaną zapisane w kopiach odzyskiwania przed zastosowaniem wyboru.', 'im-drive-status'));
-    const detail = text('details', '', 'im-drive-details'); detail.append(text('summary', 'Szczegóły różnic i dat'));
-    detail.open = hasComparisonErrors;
-    comparisons.forEach(review => {
-      if (review.error) { detail.append(text('p', CATEGORIES[review.category].label + ': ' + review.error, 'im-drive-status')); return; }
-      review.duplicateDevices.forEach(duplicate => detail.append(text('p', CATEGORIES[review.category].label + ': wykryto kilka plików nagłówka urządzenia ' + duplicate.device + '. Synchronizacja tej kategorii jest zatrzymana; sprawdź pliki na Drive.', 'im-drive-status')));
-      const record = chosenCloud(review) || review.cloud[0];
-      const state = categoryState(review.category);
-      const row = text('div', '', 'im-drive-diff-row'); row.append(text('strong', CATEGORIES[review.category].label),
-        text('span', 'Lokalnie: ' + formatBytes(review.localVersion.bytes) + ' · ostatnia zmiana ' + (review.localVersion.savedAt ? formatDate(review.localVersion.savedAt) : 'nieznana') + ' · hash ' + review.localHash),
-        text('span', record ? 'Drive: ' + formatBytes(record.fileBytes) + ' · ' + formatDate(record.savedAt) + ' · device ' + record.device + ' · hash ' + record.hash + ' · version ' + (record.driveVersion || 'brak') + ' · revision ' + (record.headRevisionId || 'brak') : 'Drive: brak kopii'),
-        text('span', review.action === 'same' ? 'Zgodne' : review.action === 'none' ? 'Brak danych do synchronizacji' :
-          !review.cloud.length ? 'Tylko lokalnie' : review.localVersion.empty ? 'Tylko na Drive' : 'Różna zawartość'),
-        text('span', 'Stan: localDirty=' + state.localDirty + ' · remoteChanged=' + state.remoteChanged +
-          ' · ostatnie sprawdzenie ' + (state.lastCheckedAt ? formatDate(state.lastCheckedAt) : 'brak') +
-          ' · ostatnia udana synchronizacja ' + (state.lastSuccessfulSyncAt ? formatDate(state.lastSuccessfulSyncAt) : 'brak')));
-      detail.append(row);
-      if (review.mergePreview) {
-        review.mergePreview.conflicts.forEach(conflict => {
-          const dataset = DATA_REGISTRY.get(conflict.dataset), key = review.category + ':' + conflict.dataset + ':' + conflict.path;
-          const item = text('div', '', 'im-drive-diff-row');
-          item.append(text('strong', (dataset ? dataset.label : conflict.dataset) + ' · ' + conflictPathLabel(conflict)),
-            text('span', 'Wspólna baza: ' + conflictValueSummary(conflict.base, conflict.basePresent)),
-            text('span', 'To urządzenie: ' + conflictValueSummary(conflict.local, conflict.localPresent)),
-            text('span', 'Google Drive: ' + conflictValueSummary(conflict.remote, conflict.remotePresent)));
-          const choice = document.createElement('select'); choice.disabled = busy;
-          const blank = text('option', 'Wybierz wersję zachowaną'); blank.value = ''; choice.append(blank);
-          [['local', 'Zachowaj to urządzenie'], ['remote', 'Zachowaj Google Drive'], ['base', 'Przywróć wspólną bazę']].forEach(([value, label]) => {
-            const option = text('option', label); option.value = value; choice.append(option);
-          });
-          choice.value = conflictChoices[key] || '';
-          choice.addEventListener('change', () => { if (choice.value) conflictChoices[key] = choice.value; else delete conflictChoices[key]; render(); });
-          item.append(choice); detail.append(item);
-        });
-      }
-    }); box.append(detail);
-    valid.filter(review => new Set(review.cloud.map(record => record.hash)).size > 1).forEach(review => {
-      const label = text('label', 'Równoległe wersje: ' + CATEGORIES[review.category].label, 'im-drive-cloud-choice');
-      const select = document.createElement('select'); select.disabled = busy;
-      const initial = text('option', 'Wybierz kopię Drive'); initial.value = ''; select.append(initial);
-      review.cloud.forEach(record => { const option = text('option', formatDate(record.savedAt) + ' · ' + formatBytes(record.bytes) + ' · urządzenie ' + record.device.slice(0, 8)); option.value = record.fileId; select.append(option); });
-      select.value = cloudChoices[review.category] || ''; select.addEventListener('change', () => { cloudChoices[review.category] = select.value; render(); }); label.append(select); box.append(label);
-    });
-    const hasErrors = comparisons.some(review => review.error), needsCloud = different.filter(review => review.action === 'conflict' && review.cloud.length);
-    if (different.some(review => review.localVersion.uploadBytes > MAX_BYTES)) box.append(text('p', 'Część danych przekracza limit zapisu. Szczegóły są w sekcji „Limity i kopie zapasowe”. Możesz wczytać mniejszą wersję z Drive.', 'im-drive-status'));
-    if (different.length) {
-      const actions = text('div', '', 'im-drive-actions');
-      if (safeChanges.length) actions.append(button('Połącz bezpieczne zmiany (' + safeChanges.length + ')', () => synchronize('merge'),
-        hasErrors || safeChanges.some(review => review.localVersion.uploadBytes > MAX_BYTES)));
-      const unresolvedConflicts = conflictReviews.some(review => review.mergePreview.conflicts.some(conflict =>
-        !conflictChoices[review.category + ':' + conflict.dataset + ':' + conflict.path]));
-      if (conflictReviews.length) actions.append(button('Zastosuj wybrane rozstrzygnięcia (' + conflictCount + ')', () => synchronize('resolve'),
-        hasErrors || unresolvedConflicts || conflictReviews.some(review => review.duplicateDevices.length || review.localVersion.uploadBytes > MAX_BYTES)));
-      const boardsReview = different.find(review => review.category === 'boards' && review.action === 'conflict' && review.cloud.length);
-      if (boardsReview) actions.append(button('Zachowaj obie wersje', keepBothBoards,
-        hasErrors || boardsReview.duplicateDevices.length > 0 || (new Set(boardsReview.cloud.map(record => record.hash)).size > 1 && !chosenCloud(boardsReview))));
-      box.append(actions, text('p', 'Sprawdzenie jest tylko do odczytu. Bezpieczne połączenie wymaga kliknięcia; rozstrzygnięcia zapisują kopie lokalne i Drive przed zmianą.', 'im-drive-help'));
+    const localBytes = valid.reduce((sum, review) => sum + review.localVersion.bytes, 0);
+    const cloudBytes = valid.reduce((sum, review) => sum + review.cloud.reduce((total, record) => total + (record.fileBytes || record.bytes), 0), 0);
+    const versions = text('div', '', 'im-drive-versions');
+    const localCard = text('div', '', 'im-drive-version');
+    localCard.append(text('h5', 'Na tym urządzeniu'), text('p', valid.every(review => review.localVersion.empty) ? 'Brak zapisanych danych.' : formatBytes(localBytes)));
+    const cloudCard = text('div', '', 'im-drive-version');
+    cloudCard.append(text('h5', 'Google Drive'), text('p', valid.some(review => review.cloud.length) ? formatBytes(cloudBytes) : 'Brak zapisanej kopii.'));
+    versions.append(localCard, cloudCard);
+    box.append(versions);
+
+    box.append(text('p', hasComparisonErrors ? 'Nie wszystkie dane udało się porównać. Operacja jest wstrzymana.' : different.length ?
+      'Różnice dotyczą ' + different.length + ' z ' + valid.length + ' obszarów. Decyzja obejmie wszystkie zsynchronizowane dane.' :
+      comparisons.every(review => review.localVersion && review.localVersion.empty && !review.cloud.length) ?
+        'Brak danych do synchronizacji. Możesz zacząć na tym urządzeniu.' : 'Google Drive i to urządzenie mają tę samą wersję.', 'im-drive-help'));
+
+    const hasDuplicates = different.some(review => review.duplicateDevices.length);
+    if (different.length && !hasComparisonErrors && !pendingDirection) {
+      const canMerge = different.every(review => !review.baseCorrupt && (review.mergePreview || !review.cloud.length && review.action === 'push'));
+      const actions = text('div', '', 'im-drive-actions im-drive-global-actions');
+      actions.append(button('Użyj Google Drive', () => confirmGlobalAction('cloud'), hasDuplicates));
+      actions.append(button('Użyj danych z tego urządzenia', () => confirmGlobalAction('local'), hasDuplicates, 'im-drive-secondary'));
+      actions.append(button('Połącz zmiany', () => confirmGlobalAction('merge'), hasDuplicates || !canMerge, 'im-drive-secondary'));
+      box.append(actions);
+      box.append(text('p', hasDuplicates ? 'Znaleziono kilka plików przypisanych do tego samego urządzenia. Wybór został wstrzymany, aby nie zgubić kopii.' :
+        'Połączenie scala niezależne zmiany. Przy zmianie tego samego pola pozostaje wartość z Google Drive. Przed decyzją zapisywane są lokalne kopie obu wersji.', 'im-drive-help'));
     }
-    if (pendingDirection) box.append(renderDirectionConfirmation());
+
+    const details = text('details', '', 'im-drive-details');
+    details.append(text('summary', 'Szczegóły'));
+    operationErrors.forEach(error => details.append(text('p', error, 'im-drive-status')));
+    comparisons.filter(review => review.error).forEach(review => details.append(text('p', CATEGORIES[review.category].label + ': ' + review.error, 'im-drive-status')));
+    comparisons.filter(review => review.baseCorrupt).forEach(review => details.append(text('p', CATEGORIES[review.category].label + ': nie można odczytać wspólnej bazy synchronizacji.', 'im-drive-status')));
+    if (hasDuplicates) details.append(text('p', 'Google Drive zawiera kilka plików dla tego samego urządzenia. Operacja jest wstrzymana, aby zachować wszystkie kopie.', 'im-drive-status'));
+    if (different.length && !hasComparisonErrors) {
+      const conflictCount = different.reduce((sum, review) => sum + (review.mergePreview ? review.mergePreview.conflicts.length : 0), 0);
+      details.append(text('p', 'Różnice: ' + different.length + ' obszarów · nakładające się zmiany: ' + conflictCount + '.'));
+    }
+    details.open = hasComparisonErrors || operationErrors.length > 0 || comparisons.some(review => review.baseCorrupt) || hasDuplicates;
+    box.append(details);
+    if (pendingDirection) box.append(renderGlobalConfirmation());
     return box;
   }
   function render() {
-    renderBackgroundStatus();
+    renderConnectionStatus();
     if (!panel) return;
-    panel.replaceChildren(); panel.append(text('h3', 'Synchronizacja z Google Drive'));
-    panel.append(text('p', 'Zapisuj dane InfoMatyki na swoim Google Drive i przenoś je między urządzeniami. Aplikacja ma dostęp tylko do swojego prywatnego folderu, bez dostępu do Twoich dokumentów.'));
+    panel.replaceChildren();
+    panel.append(text('h3', 'Cloud Save'));
+    panel.append(text('p', 'Zapisuj trwałe dane InfoMatyki na Google Drive i przenoś je na inne urządzenie. Aplikacja ma dostęp tylko do swojego prywatnego folderu.'));
+
     const top = text('div', '', 'im-drive-toolbar');
-    top.append(text('span', connected() ? 'Połączono: ' + (account.emailAddress || account.displayName) : prefs.accountEmail ? 'Konto: ' + prefs.accountEmail + ' · połączenie do odnowienia' : 'Najpierw zaloguj się do Google Drive.', 'im-drive-status'));
-    top.append(button(connected() ? 'Zmień konto' : prefs.accountEmail ? 'Połącz ponownie' : 'Zaloguj się do Google Drive', () => beginConnect(connected()), !ready, 'im-drive-secondary'));
-    if (connected()) top.append(button('Odłącz', disconnect, false, 'im-drive-secondary')); panel.append(top);
-    const checkLabel = text('label', '', 'im-drive-choice'); const checkMode = document.createElement('input'); checkMode.type = 'checkbox';
-    checkMode.checked = prefs.syncMode === 'check-only'; checkMode.disabled = busy || authorizing;
-    checkMode.addEventListener('change', () => {
-      prefs.syncMode = checkMode.checked ? 'check-only' : 'manual'; savePrefs();
-      if (checkMode.checked) scheduleBackground(1000); else clearTimeout(backgroundTimer);
-      render();
-    });
-    checkLabel.append(checkMode, text('span', 'Automatycznie sprawdzaj zmiany (bez wysyłania i pobierania)')); panel.append(checkLabel);
-    panel.append(text('p', connected() ? backgroundMessage() || (prefs.syncMode === 'check-only' ? 'Automatyczne sprawdzanie jest tylko do odczytu. Każdy Push lub Pull wymaga osobnego wyboru.' : 'Tryb ręczny: porównaj dane i wybierz działanie przyciskiem poniżej.') : 'Po otwarciu strony Drive może zostać sprawdzony. Samo sprawdzanie nigdy nie zmienia lokalnych ani chmurowych danych.', 'im-drive-help'));
-    const deviceLabel = text('label', '', 'im-drive-choice'); deviceLabel.append(text('span', 'Nazwa tego urządzenia'));
-    const deviceName = document.createElement('input'); deviceName.type = 'text'; deviceName.maxLength = 60; deviceName.value = prefs.deviceName || '';
-    deviceName.placeholder = 'Urządzenie ' + (root.localStorage.getItem(DEVICE_KEY) || '').slice(-4);
-    deviceName.addEventListener('change', () => { prefs.deviceName = deviceName.value.trim().slice(0, 60); if (engine) engine.deviceName = prefs.deviceName; savePrefs(); });
-    deviceLabel.append(deviceName); panel.append(deviceLabel);
+    const accountLabel = connected() ? 'Połączono: ' + (account.emailAddress || account.displayName) :
+      prefs.accountEmail ? 'Konto: ' + prefs.accountEmail + ' · połącz ponownie' : 'Połącz konto Google, aby rozpocząć.';
+    top.append(text('span', accountLabel, 'im-drive-status'));
+    top.append(button(connected() ? 'Zmień konto' : 'Połącz Google Drive',
+      () => beginConnect(connected(), connected() ? null : { synchronize: true }), !ready, 'im-drive-secondary'));
+    if (connected()) top.append(button('Odłącz', disconnect, false, 'im-drive-secondary'));
+    panel.append(top);
+
     if (connected()) {
-      const choices = document.createElement('fieldset'); choices.disabled = busy || authorizing; choices.className = 'im-drive-scope';
-      choices.append(text('legend', 'Co synchronizować?'));
-      const grid = text('div', '', 'im-drive-choice-grid');
-      GROUPS.forEach(group => {
-        const label = text('label', '', 'im-drive-choice im-drive-group'); const check = document.createElement('input'); check.type = 'checkbox';
-        check.checked = group.categories.every(key => prefs.selected.includes(key)); check.indeterminate = !check.checked && group.categories.some(key => prefs.selected.includes(key));
-        check.addEventListener('change', () => {
-          prefs.selected = check.checked ? Object.keys(CATEGORIES).filter(key => prefs.selected.includes(key) || group.categories.includes(key)) : prefs.selected.filter(key => !group.categories.includes(key));
-          prefs.scopePending = true; clearTimeout(backgroundTimer);
-          comparisons = []; recovery = []; cloudChoices = Object.create(null); savePrefs(); notice = 'Zakres zmieniony. Kliknij „Synchronizuj”, aby porównać dane.'; render();
-        });
-        const caption = text('span', ''); caption.append(text('strong', group.label), text('small', group.detail)); label.append(check, caption); grid.append(label);
-      }); choices.append(grid); panel.append(choices);
-      panel.append(text('p', 'Wszystko jest domyślnie zaznaczone. Po zmianie zakresu sprawdzenie czeka na kliknięcie „Synchronizuj”.', 'im-drive-help'));
-      panel.append(button(busy ? (progressMessage || 'Sprawdzanie…') : 'Synchronizuj', () => synchronize(), !prefs.selected.length));
-      panel.append(text('p', 'Połączenie jest zachowane podczas przechodzenia między podstronami. Nowa karta tej samej przeglądarki może je przejąć od otwartej karty. Ważne do: ' + formatDate(new Date(token.expiresAt).toISOString()), 'im-drive-help'));
-    } else if (!configured) panel.append(text('p', 'Administrator nie skonfigurował jeszcze połączenia Google Drive.', 'im-drive-help'));
-    const status = text('p', progressMessage || notice, 'im-drive-status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); panel.append(status);
+      panel.append(text('p', 'Synchronizacja obejmuje wszystkie trwałe dane InfoMatyki. Sprawdzenie niczego nie zmienia; decyzja o pobraniu, wysłaniu lub połączeniu zawsze należy do Ciebie.', 'im-drive-help'));
+      panel.append(button(busy ? (progressMessage || 'Synchronizowanie…') : 'Synchronizuj', () => synchronize()));
+    } else if (!configured) {
+      panel.append(text('p', 'Administrator nie skonfigurował jeszcze połączenia Google Drive.', 'im-drive-help'));
+    }
+
+    const status = text('p', progressMessage || notice, 'im-drive-status');
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    panel.append(status);
     if (comparisons.length && connected()) panel.append(renderComparison());
     if (applied) panel.append(button('Odśwież widok po wczytaniu danych', () => root.location.reload()));
-    const advanced = text('details', '', 'im-drive-details'); advanced.append(text('summary', 'Limity i kopie zapasowe'));
-    advanced.append(text('p', 'Limity InfoMatyki: 8 MiB na manifest kategorii, 80 MiB na pojedynczy asset, 500 MiB assetów na bibliotekę, 100 manifestów urządzeń w kategorii oraz 5 lokalnych kopii na kategorię i konto. Kopie przechowują też assety i zajmują miejsce na urządzeniu.', 'im-drive-help'));
-    comparisons.filter(review => !review.error).forEach(review => advanced.append(text('p', CATEGORIES[review.category].label + ': pliki ' + review.fileCount + '/100 · zapis lokalny ' + formatBytes(review.localVersion.uploadBytes) + '/8 MiB', 'im-drive-help')));
-    const recoveryActions = text('div', '', 'im-drive-actions');
-    const importInput = document.createElement('input'); importInput.type = 'file'; importInput.accept = '.imbackup,application/vnd.infomatyka.drive-recovery'; importInput.hidden = true;
-    importInput.addEventListener('change', () => { if (importInput.files && importInput.files[0]) importRecovery(importInput.files[0]); importInput.value = ''; });
-    recoveryActions.append(importInput,
-      button('Pokaż kopie do przywrócenia', showRecovery, !root.localforage, 'im-drive-secondary'),
-      button('Pobierz kopie lokalne', downloadRecovery, !root.localforage, 'im-drive-secondary'),
-      button('Importuj kopie lokalne', () => importInput.click(), !root.localforage, 'im-drive-secondary'));
-    advanced.append(recoveryActions);
-    recovery.forEach(copy => advanced.append(button('Przywróć: ' + CATEGORIES[copy.category].label + ' · ' + formatDate(copy.at) + ' · ' + (copy.reason || 'kopia lokalna') + ' · ' + formatBytes(byteSize(copy.data)), () => restoreCopy(copy), false, 'im-drive-secondary')));
-    panel.append(advanced); if (recovery.length) advanced.open = true;
+
+    const history = text('details', '', 'im-drive-details');
+    history.append(text('summary', 'Historia danych i kopie zapasowe'));
+    history.append(text('p', 'Przed wysłaniem, pobraniem, połączeniem lub przywróceniem tworzone są lokalne kopie. Obejmują także pliki tablic.', 'im-drive-help'));
+    const historyActions = text('div', '', 'im-drive-actions');
+    const importInput = document.createElement('input');
+    importInput.type = 'file';
+    importInput.accept = '.imbackup,application/vnd.infomatyka.drive-recovery';
+    importInput.hidden = true;
+    importInput.addEventListener('change', () => {
+      if (importInput.files && importInput.files[0]) importRecovery(importInput.files[0]);
+      importInput.value = '';
+    });
+    historyActions.append(importInput,
+      button('Historia danych', showRecovery, !root.localforage, 'im-drive-secondary'),
+      button('Pobierz kopię', downloadRecovery, !root.localforage, 'im-drive-secondary'),
+      button('Wczytaj kopię', () => importInput.click(), !root.localforage, 'im-drive-secondary'));
+    history.append(historyActions);
+    recovery.forEach(copy => history.append(button('Przywróć: ' + CATEGORIES[copy.category].label + ' · ' + formatDate(copy.at) + ' · ' +
+      (copy.reason || 'kopia lokalna') + ' · ' + formatBytes(byteSize(copy.data)), () => restoreCopy(copy), false, 'im-drive-secondary')));
+    panel.append(history);
+    if (recovery.length) history.open = true;
   }
   async function getDiagnostics() {
     const reviews = new Map();
@@ -1690,7 +1542,7 @@
         lastSync: review ? categoryState(dataset.category).lastSuccessfulSyncAt : null };
     }).reduce(async (previous, current) => [...await previous, await current], Promise.resolve([]));
   }
-  root.InfoMatykaDrive = { version: MODULE_VERSION, categories: CATEGORIES, synchronize: () => synchronize(), syncInBackground, disconnect,
+  root.InfoMatykaDrive = { version: MODULE_VERSION, categories: CATEGORIES, synchronize: () => synchronize(), disconnect,
     getDiagnostics, isConnected: connected, guardBoardWrite,
     isBusy: () => busy || authorizing,
     mount: async function (element) { panel = element; if (!client) preparePromise = null; render(); await prepare(); } };
@@ -1699,20 +1551,20 @@
       try {
         const latest = JSON.parse(root.localStorage.getItem(SETTINGS_KEY));
         if (!latest || latest.connectionActive === false || (account && latest.boundAccount !== account.permissionId)) { disconnect(false); return; }
-        prefs = { ...prefs, ...latest }; comparisons = []; recovery = []; cloudChoices = Object.create(null); render(); scheduleBackground(2000);
+        mergeSavedPrefs(latest);
+        comparisons = []; recovery = []; operationErrors = []; pendingDirection = null; render();
       } catch (_) { disconnect(false); }
     } else if (event.key && event.key.startsWith(HYDRATION_PREFIX)) {
       const category = event.key.slice(HYDRATION_PREFIX.length);
-      if (has(CATEGORIES, category) && !checkEpoch(category)) { needsReload = true; renderBackgroundStatus(); scheduleRefresh(); }
+      if (has(CATEGORIES, category) && !checkEpoch(category)) { needsReload = true; renderConnectionStatus(); scheduleRefresh(); }
     } else if (keyCategory.has(event.key)) localChanged(keyCategory.get(event.key));
   });
   setInterval(() => {
     renewEditLease();
     if (token && !connected()) {
-      token = null; account = null; engine = null; comparisons = []; clearSession();
+      token = null; account = null; engine = null; comparisons = []; pendingDirection = null; clearSession();
       notice = 'Połączenie z Google Drive wygasło. Połącz ponownie.'; render();
     }
-    if (connected() && prefs.syncMode === 'check-only') syncInBackground();
     if (needsReload) scheduleRefresh();
   }, 30000);
   function startRuntime() { panel = document.getElementById('infomatyka-drive-settings'); installObservers(); render(); prepare(); }
