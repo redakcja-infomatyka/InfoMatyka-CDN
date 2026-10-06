@@ -1238,7 +1238,10 @@
               });
               if (result.action === 'conflict') stale = true;
               else if (!['same', 'none'].includes(result.action)) recordSuccessfulSync(review, result, chosenCloud(review));
-            } catch (error) { failures.push(CATEGORIES[review.category].label + ': ' + error.message); }
+            } catch (error) {
+              root.console?.error('[InfoMatyka Drive] Błąd synchronizacji kategorii „' + review.category + '”', error);
+              failures.push(CATEGORIES[review.category].label + ': ' + error.message);
+            }
           }
           comparisons = failures.length || stale ? await inspectAll(selected) : [];
           cloudChoices = Object.create(null);
