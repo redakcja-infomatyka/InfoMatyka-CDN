@@ -6,13 +6,13 @@
  *   <div class="infomatyka-lesson" data-src="https://.../moja-lekcja.json"></div>
  *   <script type="application/json" class="infomatyka-lesson">{ ...lekcja... }</script>
  *   <div class="infomatyka-lesson" data-from-location></div>   // ?lekcja=URL, #lekcja=KOD, ?id=ID_Z_BIBLIOTEKI
- *   <script src="https://infomatyka-cdn.pages.dev/infomatyka-lesson.js" defer></script>
+ *   <script src="https://cdn.jsdelivr.net/gh/redakcja-infomatyka/InfoMatyka-CDN@main/infomatyka-lesson.js" defer></script>
  */
 (function (root) {
   'use strict';
   if (root.InfoMatykaLesson && root.InfoMatykaLesson.VERSION) return;
 
-  const VERSION = '1.0.0';
+  const VERSION = '1.1.0';
   const FORMAT = 'infomatyka-lesson';
   const doc = root.document;
   const VIEWER_URL = 'https://www.infomatyka.pl/p/lekcja.html';
@@ -255,6 +255,10 @@
 .iml{--a:#1677e6;--a-ink:#0b4fa8;--a-soft:#eaf3ff;--ink:#0f172a;--muted:#55657a;--line:#e3e9f1;--bg:#f4f7fb;--card:#fff;--ok:#16a34a;--ok-soft:#eaf8ef;--bad:#dc2626;--bad-soft:#fdeeee;--r:14px;--font:"DM Sans",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;--hfont:"Manrope","DM Sans",system-ui,sans-serif;
   display:block;box-sizing:border-box;width:100%;container-type:inline-size;background:var(--bg);color:var(--ink);font:16px/1.65 var(--font);text-align:left;letter-spacing:normal;word-spacing:normal;text-transform:none;overflow-wrap:break-word;-webkit-text-size-adjust:100%;color-scheme:light}
 .iml *,.iml *::before,.iml *::after{box-sizing:border-box}
+.iml.iml-view{display:flex;flex-direction:column;min-height:var(--iml-page-height,100dvh)}
+.iml .iml-footer{flex:none;width:100%;margin-top:auto}
+.iml.iml-view>.iml-doc{flex:none}
+.iml.iml-view>.iml-progress{flex:none}
 .iml [hidden]{display:none!important}
 .iml.iml-font-system{--font:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;--hfont:var(--font)}
 .iml.iml-font-serif{--font:Georgia,"Times New Roman",serif;--hfont:Georgia,serif}
@@ -278,6 +282,8 @@
 .iml .iml-rich{font-size:1em;color:#334155;line-height:1.7}
 .iml .iml-rich p,.iml .iml-rich div{margin:0 0 .7em}.iml .iml-rich>:last-child{margin-bottom:0}
 .iml .iml-rich ul,.iml .iml-rich ol{margin:.3em 0 .8em;padding-left:1.4em}
+.iml .iml-rich ul{list-style:disc outside}.iml .iml-rich ol{list-style:decimal outside}
+.iml .iml-rich li{display:list-item;list-style:inherit}
 .iml .iml-rich a,.iml .iml-h a{color:var(--a);text-decoration:underline;text-underline-offset:2px}
 .iml .iml-rich code,.iml .iml-h code{font:.9em/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;background:#eef2f7;padding:.1em .35em;border-radius:5px;color:#0f3a66}
 .iml .iml-rich mark{background:#fff3b0;padding:0 .15em;border-radius:3px}
@@ -420,15 +426,35 @@
 .iml .iml-code .hljs-keyword,.iml .iml-code .hljs-built_in,.iml .iml-code .hljs-selector-tag{color:#c792ea}.iml .iml-code .hljs-string,.iml .iml-code .hljs-attr{color:#c3e88d}
 .iml .iml-code .hljs-number,.iml .iml-code .hljs-literal{color:#f78c6c}.iml .iml-code .hljs-comment{color:#64748b;font-style:italic}
 .iml .iml-code .hljs-title,.iml .iml-code .hljs-function{color:#82aaff}.iml .iml-code .hljs-params,.iml .iml-code .hljs-variable{color:#e2e8f0}
-.iml .iml-table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:#fff}
-.iml .iml-table{width:100%;border-collapse:collapse;font-size:.95em}
-.iml .iml-table th,.iml .iml-table td{padding:10px 14px;border:0;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;background:none;color:#334155;min-width:60px}
+.iml .iml-table-wrap{position:relative;overflow-x:auto;overflow-y:hidden;border:1px solid var(--line);border-radius:12px;background:#fff}
+.iml .iml-table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:.95em}
+.iml .iml-table th,.iml .iml-table td{padding:10px 14px;border:0;border-bottom:1px solid var(--line);text-align:inherit;vertical-align:top;background:none;color:#334155;overflow-wrap:anywhere}
+.iml .iml-table th:empty::after,.iml .iml-table td:empty::after{content:"\\200b"}
+.iml .iml-table-auto{table-layout:auto;width:auto;max-width:100%}
+.iml .iml-table-auto th,.iml .iml-table-auto td{overflow-wrap:normal;word-break:normal;min-width:4em}
+.iml .iml-table-wrap.iml-table-wrap-auto{width:fit-content;max-width:100%}
+.iml .iml-block[data-align=center] .iml-table-wrap-auto{margin-inline:auto}.iml .iml-block[data-align=right] .iml-table-wrap-auto{margin-left:auto}
+.iml .iml-table-resizer{position:absolute;touch-action:none;z-index:2;padding:0;border:0;background:transparent}
+.iml .iml-table-column-resizer{top:0;bottom:0;width:10px;transform:translateX(-50%);cursor:col-resize}
+.iml .iml-table-row-resizer{left:0;right:0;height:8px;transform:translateY(-50%);cursor:row-resize}
+.iml .iml-table-resizer::after{content:"";position:absolute;background:transparent}
+.iml .iml-table-column-resizer::after{left:4px;top:0;bottom:0;width:1px}
+.iml .iml-table-row-resizer::after{left:0;right:0;top:3px;height:1px}
+.iml .iml-table-resizer:hover::after,.iml .iml-table-resizer:focus-visible::after{background:#94a3b8}
+.iml-table-guide{position:fixed;pointer-events:none;z-index:2147483290}
+.iml-table-guide-column{top:0;bottom:0;border-left:1px dashed #64748b}
+.iml-table-guide-row{left:0;right:0;border-top:1px dashed #64748b}
 .iml .iml-table th{background:#f6f9fc;font-weight:700;color:var(--ink)}
 .iml .iml-table tr:last-child td{border-bottom:0}
 .iml .iml-table.iml-striped tbody tr:nth-child(even) td{background:#fafcfe}
 .iml .iml-table td+td,.iml .iml-table th+th{border-left:1px solid var(--line)}
-.iml .iml-embed{position:relative;width:100%;border-radius:var(--r);overflow:hidden;border:1px solid var(--line);background:#fff}
-.iml .iml-embed iframe{display:block;width:100%;height:var(--eh,480px);border:0;margin:0}
+.iml .iml-embed{position:relative;width:100%;height:var(--eh,480px);border-radius:var(--r);overflow:hidden;border:1px solid var(--line);background:#fff}
+.iml .iml-embed iframe{position:absolute;left:0;top:0;display:block;width:100%;height:100%;border:0;margin:0}
+.iml .iml-embed-frame{width:100%;min-width:0}
+.iml .iml-embed-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:8px}
+.iml .iml-embed-frame:fullscreen{display:flex;flex-direction:column;background:#fff;padding:12px}
+.iml .iml-embed-frame:fullscreen .iml-embed{flex:1;min-height:0;height:auto!important;aspect-ratio:auto!important}
+
 .iml .iml-blanks{padding:clamp(16px,2.8cqi,22px)}
 .iml .iml-blanks-title{font-weight:700;margin-bottom:10px;color:var(--ink)}
 .iml .iml-blanks-text{line-height:2.3;color:#334155}
@@ -461,7 +487,7 @@
 @keyframes imlFade{from{opacity:0}to{opacity:1}}
 @keyframes imlPop{0%{transform:scale(.97);opacity:.6}100%{transform:none;opacity:1}}
 .iml .iml-pop{animation:imlPop .25s ease}
-@media print{.iml{background:#fff}.iml .iml-section{box-shadow:none;break-inside:avoid-page}.iml .iml-progress,.iml .iml-stepnav,.iml .iml-finish,.iml .iml-gnav,.iml .iml-actions{display:none!important}.iml .iml-section[hidden]{display:block!important}}
+@media print{.iml{background:#fff}.iml.iml-view{display:block;min-height:0}.iml .iml-section{box-shadow:none;break-inside:avoid-page}.iml .iml-progress,.iml .iml-stepnav,.iml .iml-finish,.iml .iml-gnav,.iml .iml-actions{display:none!important}.iml .iml-section[hidden]{display:block!important}}
 @media (prefers-reduced-motion:reduce){.iml *{animation:none!important;transition:none!important}}
 `;
   function injectCss() {
@@ -530,7 +556,7 @@
     return s ? { kind: 'iframe', src: s } : null;
   }
   function parseChartData(text) {
-    const lines = str(text).split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    const lines = str(text).split(/\r?\n/).filter(l => l.trim());
     if (!lines.length) return { labels: [], series: [] };
     const sep = lines[0].indexOf('\t') >= 0 ? '\t' : lines[0].indexOf(';') >= 0 ? ';' : ',';
     const rows = lines.map(l => l.split(sep).map(c => c.trim()));
@@ -949,14 +975,17 @@
         const round = type === 'pie' || type === 'doughnut' || type === 'polarArea';
         const colors = str(p.colors).split(/[\s,;]+/).filter(c => /^#[0-9a-f]{3,8}$/i.test(c));
         const pal = colors.length ? colors : PALETTE;
+        const pointColors = arr(p.pointColors);
+        const perPoint = round || data.series.length === 1 && (type === 'bar' || type === 'hbar');
+        const pointColor = j => /^#[0-9a-f]{6}$/i.test(pointColors[j] || '') ? pointColors[j] : pal[j % pal.length];
         const chart = new root.Chart(canvas, {
           type: type === 'hbar' ? 'bar' : type,
           data: {
             labels: data.labels,
             datasets: data.series.map((s, i) => ({
               label: s.name, data: s.values,
-              backgroundColor: round ? data.labels.map((_, j) => pal[j % pal.length]) : (type === 'line' || type === 'radar' ? pal[i % pal.length] + '33' : pal[i % pal.length]),
-              borderColor: round ? '#fff' : pal[i % pal.length], borderWidth: round ? 2 : 2, tension: .35, fill: type === 'radar', borderRadius: type === 'bar' || type === 'hbar' ? 6 : 0, pointRadius: 3
+              backgroundColor: perPoint ? data.labels.map((_, j) => pointColor(j)) : (type === 'line' || type === 'radar' ? pal[i % pal.length] + '33' : pal[i % pal.length]),
+              borderColor: round ? '#fff' : perPoint ? data.labels.map((_, j) => pointColor(j)) : pal[i % pal.length], borderWidth: 2, tension: .35, fill: type === 'radar', borderRadius: type === 'bar' || type === 'hbar' ? 6 : 0, pointRadius: 3
             }))
           },
           options: {
@@ -987,32 +1016,193 @@
   };
   const LANGS = { python: 'Python', javascript: 'JavaScript', html: 'HTML', css: 'CSS', cpp: 'C++', c: 'C', java: 'Java', csharp: 'C#', pascal: 'Pascal', sql: 'SQL', bash: 'Bash', json: 'JSON', php: 'PHP', text: 'Tekst' };
 
+  function tableColumnWidths(widths, count) {
+    const values = Array.from({ length: count }, (_, i) => +arr(widths)[i]);
+    if (values.some(value => !Number.isFinite(value) || value <= 0)) return values.map(() => 100 / count);
+    const total = values.reduce((sum, value) => sum + value, 0);
+    return values.map(value => value * 100 / total);
+  }
+  function tableResizers(wrap, table, onChange) {
+    const handles = [];
+    const rows = Array.from(table.rows);
+    const count = rows[0].cells.length;
+    let drag = null;
+    function measurements() {
+      const rect = table.getBoundingClientRect();
+      const scale = rect.width / Math.max(1, table.offsetWidth);
+      return {
+        rect, scale,
+        widths: Array.from(rows[0].cells, cell => cell.getBoundingClientRect().width / Math.max(1, rect.width) * 100),
+        heights: rows.map(row => row.getBoundingClientRect().height / Math.max(.01, scale))
+      };
+    }
+    function position() {
+      if (!table.isConnected || drag) return;
+      const m = measurements(), wrapRect = wrap.getBoundingClientRect();
+      let offset = 0;
+      handles.filter(item => item.axis === 'column').forEach(item => {
+        offset += m.widths[item.index]; item.handle.style.left = offset + '%';
+        item.handle.setAttribute('aria-valuenow', String(Math.round(m.widths[item.index])));
+      });
+      handles.filter(item => item.axis === 'row').forEach(item => {
+        item.handle.style.top = (rows[item.index].getBoundingClientRect().bottom - wrapRect.top) / Math.max(.01, m.scale) - wrap.clientTop + 'px';
+        item.handle.setAttribute('aria-valuenow', String(Math.round(m.heights[item.index])));
+      });
+    }
+    function update(axis, index, original, delta, m) {
+      const values = original.slice();
+      if (axis === 'column') {
+        const total = original[index] + original[index + 1];
+        const min = Math.min(48 / Math.max(1, m.rect.width) * 100, total / 4);
+        values[index] = Math.max(min, Math.min(total - min, original[index] + delta));
+        values[index + 1] = total - values[index];
+      } else values[index] = clamp(original[index] + delta, 32, 2000);
+      return values;
+    }
+    function addHandle(axis, index) {
+      const column = axis === 'column';
+      const handle = h('button', { class: 'iml-table-resizer iml-table-' + axis + '-resizer', type: 'button', 'data-le': '1', ['data-' + axis + '-index']: index,
+        role: 'separator', 'aria-orientation': column ? 'vertical' : 'horizontal', 'aria-valuemin': column ? 0 : 32, 'aria-valuemax': column ? 100 : 2000,
+        'aria-label': (column ? 'Szerokość kolumny ' : 'Wysokość wiersza ') + (index + 1), title: column ? 'Przeciągnij granicę kolumny' : 'Przeciągnij granicę wiersza' });
+      handle.addEventListener('pointerdown', event => {
+        if (event.button !== 0) return;
+        event.preventDefault(); event.stopPropagation();
+        const m = measurements(), original = column ? m.widths : m.heights;
+        const guide = h('div', { class: 'iml-table-guide iml-table-guide-' + axis, 'aria-hidden': 'true' });
+        doc.body.append(guide);
+        const boundary = column ? rows[0].cells[index].getBoundingClientRect().right : rows[index].getBoundingClientRect().bottom;
+        guide.style[column ? 'left' : 'top'] = boundary + 'px';
+        drag = { pointerId: event.pointerId, axis, index, m, original, values: original.slice(), start: column ? event.clientX : event.clientY, boundary, guide };
+        handle.setPointerCapture(event.pointerId); handle.classList.add('iml-resizing');
+      });
+      handle.addEventListener('pointermove', event => {
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        const delta = column ? (event.clientX - drag.start) * 100 / Math.max(1, drag.m.rect.width) : (event.clientY - drag.start) / Math.max(.01, drag.m.scale);
+        drag.values = update(axis, index, drag.original, delta, drag.m);
+        const distance = drag.values[index] - drag.original[index];
+        drag.guide.style[column ? 'left' : 'top'] = drag.boundary + distance * (column ? drag.m.rect.width / 100 : drag.m.scale) + 'px';
+      });
+      function finish(event) {
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        const result = drag; drag = null;
+        result.guide.remove(); handle.classList.remove('iml-resizing');
+        if (event.type === 'pointerup' && result.values.some((value, i) => Math.abs(value - result.original[i]) > .001)) onChange(axis, result.values);
+        else position();
+      }
+      handle.addEventListener('pointerup', finish); handle.addEventListener('pointercancel', finish); handle.addEventListener('lostpointercapture', finish);
+      handle.addEventListener('keydown', event => {
+        const backward = column ? 'ArrowLeft' : 'ArrowUp', forward = column ? 'ArrowRight' : 'ArrowDown';
+        if (event.key !== backward && event.key !== forward) return;
+        event.preventDefault(); event.stopPropagation();
+        const m = measurements(), original = column ? m.widths : m.heights;
+        onChange(axis, update(axis, index, original, (event.key === forward ? 1 : -1) * (event.shiftKey ? 5 : 1), m), index);
+      });
+      handles.push({ axis, index, handle }); wrap.append(handle);
+    }
+    for (let i = 0; i < count - 1; i++) addHandle('column', i);
+    rows.forEach((_, i) => addHandle('row', i));
+    const observer = root.ResizeObserver ? new ResizeObserver(position) : null;
+    if (observer) { observer.observe(table); Array.from(rows[0].cells).forEach(cell => observer.observe(cell)); }
+    const frame = requestAnimationFrame(position);
+    wrap.setAttribute('data-iml-managed', '1');
+    wrap._imlDispose = () => { if (observer) observer.disconnect(); cancelAnimationFrame(frame); if (drag) drag.guide.remove(); drag = null; };
+  }
   R.table = (b, ctx) => {
     const p = b.props;
     const rows = arr(p.rows).length ? arr(p.rows) : [['', ''], ['', '']];
     const ncol = Math.max.apply(null, rows.map(r => arr(r).length).concat(1));
-    const table = h('table', { class: 'iml-table' + (p.striped !== false ? ' iml-striped' : '') });
-    const mk = (tag, ri, ci) => h(tag, attrs({ class: 'iml-tex', html: sanitizeInline(arr(rows[ri])[ci]) }, ed(ctx, 'rows.' + ri + '.' + ci, 'inline', ' ')));
+    const table = h('table', { class: 'iml-table' + (p.autoFit ? ' iml-table-auto' : '') + (p.striped !== false ? ' iml-striped' : '') });
+    const widths = tableColumnWidths(p.columnWidths, ncol);
+    table.append(h('colgroup', null, widths.map(width => h('col', { style: { width: p.autoFit ? null : width + '%' } }))));
+    const mk = (tag, ri, ci) => {
+      const style = getPath(p, 'cellStyles.' + ri + '.' + ci) || {};
+      return h(tag, attrs({ class: 'iml-tex', html: sanitizeInline(arr(rows[ri])[ci]), style: {
+        textAlign: ['left', 'center', 'right', 'justify'].includes(style.textAlign) ? style.textAlign : null,
+        verticalAlign: ['top', 'middle', 'bottom'].includes(style.verticalAlign) ? style.verticalAlign : null
+      } }, ed(ctx, 'rows.' + ri + '.' + ci, 'inline', ' ')));
+    };
     let start = 0;
     if (p.header !== false) {
-      table.append(h('thead', null, h('tr', null, Array.from({ length: ncol }, (_, ci) => mk('th', 0, ci)))));
+      table.append(h('thead', null, h('tr', { style: { height: +arr(p.rowHeights)[0] > 0 ? clamp(+p.rowHeights[0], 32, 2000) + 'px' : null } }, Array.from({ length: ncol }, (_, ci) => mk('th', 0, ci)))));
       start = 1;
     }
     const tbody = h('tbody');
-    for (let ri = start; ri < rows.length; ri++) tbody.append(h('tr', null, Array.from({ length: ncol }, (_, ci) => mk('td', ri, ci))));
+    for (let ri = start; ri < rows.length; ri++) tbody.append(h('tr', { style: { height: +arr(p.rowHeights)[ri] > 0 ? clamp(+p.rowHeights[ri], 32, 2000) + 'px' : null } }, Array.from({ length: ncol }, (_, ci) => mk('td', ri, ci))));
     table.append(tbody);
-    return [h('div', { class: 'iml-table-wrap' }, table), (p.caption || ctx.edit) ? h('div', attrs({ class: 'iml-caption', text: str(p.caption) }, ed(ctx, 'caption', 'plain', 'Podpis tabeli (opcjonalnie)'))) : null];
+    const wrap = h('div', { class: 'iml-table-wrap' + (p.autoFit ? ' iml-table-wrap-auto' : '') }, table);
+    if (ctx.edit) tableResizers(wrap, table, (axis, value, focusIndex) => {
+      if (axis === 'column') p.autoFit = false;
+      ctx.change(b.id, axis === 'column' ? 'columnWidths' : 'rowHeights', value);
+      if (focusIndex != null) requestAnimationFrame(() => {
+        const block = Array.from(ctx.rootEl.querySelectorAll('[data-block-id]')).find(el => el.getAttribute('data-block-id') === b.id);
+        const handle = block && block.querySelector('[data-' + axis + '-index="' + focusIndex + '"]');
+        if (handle) handle.focus();
+      });
+    });
+    return [wrap, (p.caption || ctx.edit) ? h('div', attrs({ class: 'iml-caption', text: str(p.caption) }, ed(ctx, 'caption', 'plain', 'Podpis tabeli (opcjonalnie)'))) : null];
   };
 
+  function parseEmbed(value, props) {
+    let url = str(value).trim(), width = 0, height = 0;
+    if (/<iframe\b/i.test(url)) {
+      const template = doc.createElement('template'); template.innerHTML = url;
+      const frame = template.content.querySelector('iframe');
+      if (!frame) return null;
+      url = frame.getAttribute('src') || '';
+      width = +frame.getAttribute('width'); height = +frame.getAttribute('height');
+    }
+    const src = safeUrl(url, 'embed'); if (!src) return null;
+    let address; try { address = new URL(src); } catch (_) { return null; }
+    const host = address.hostname.toLowerCase();
+    const ratio = ['16/9', '4/3', '1/1'].includes(props.ratio) ? props.ratio.split('/').map(Number) : null;
+    if (host === 'canva.com' || host === 'www.canva.com') {
+      if (!/^\/design\/[a-z0-9_-]{6,64}(?:\/[^/]+)?\/(?:view|edit)\/?$/i.test(address.pathname)) return null;
+      address.protocol = 'https:'; address.port = ''; address.pathname = address.pathname.replace(/\/edit\/?$/, '/view'); address.search = '?embed'; address.hash = '';
+      return { kind: 'canva', src: address.href, link: address.href.replace('?embed', ''), ratio: ratio ? ratio[0] / ratio[1] : width > 0 && height > 0 ? width / height : 16 / 9 };
+    }
+    if (host === 'geogebra.org' || host === 'www.geogebra.org') {
+      const match = address.pathname.match(/\/(?:m|classic)\/([a-z0-9]+)(?:\/|$)/i) || address.pathname.match(/\/material\/iframe\/id\/([a-z0-9]+)(?:\/|$)/i);
+      if (match) {
+        const embeddedWidth = address.pathname.match(/\/width\/(\d+)/), embeddedHeight = address.pathname.match(/\/height\/(\d+)/);
+        const baseWidth = clamp(width || embeddedWidth && +embeddedWidth[1] || 1100, 320, 4000);
+        const baseHeight = clamp(ratio ? baseWidth * ratio[1] / ratio[0] : height || embeddedHeight && +embeddedHeight[1] || +props.height || 600, 180, 2400);
+        return { kind: 'geogebra', width: baseWidth, height: baseHeight, ratio: baseWidth / baseHeight,
+          link: 'https://www.geogebra.org/m/' + match[1],
+          src: 'https://www.geogebra.org/material/iframe/id/' + match[1] + '/width/' + Math.round(baseWidth) + '/height/' + Math.round(baseHeight) + '/border/FFFFFF/rc/true/ai/false/sdz/true/smb/false/stb/false/stbh/false/ld/false/sri/false/ctl/false/sfsb/true/szb/true' };
+      }
+    }
+    return { kind: 'web', src, link: src, ratio: ratio ? ratio[0] / ratio[1] : null };
+  }
   R.embed = (b, ctx) => {
-    let url = str(b.props.url).trim();
-    const m = url.match(/<iframe[^>]+src=["']([^"']+)["']/i);
-    if (m) url = m[1];
-    const src = safeUrl(url, 'embed');
-    if (!src) return ctx.edit ? h('div', { class: 'iml-placeholder' }, icon('eye'), h('div', { text: 'Wklej link https:// (GeoGebra, Desmos, Padlet, Genially, formularz…)' })) : null;
-    return h('div', { class: 'iml-embed', style: { '--eh': (+b.props.height || 480) + 'px' } },
-      h('iframe', { src, title: str(b.props.title) || 'Osadzona treść', loading: 'lazy', allow: 'fullscreen; clipboard-write; autoplay', allowfullscreen: true, referrerpolicy: 'strict-origin-when-cross-origin', sandbox: 'allow-scripts allow-same-origin allow-popups allow-forms allow-presentation allow-downloads' })
-    );
+    const p = b.props, source = parseEmbed(p.url, p);
+    if (!source) return ctx.edit ? h('div', { class: 'iml-placeholder' }, icon('eye'), h('div', { text: 'Wklej link do apletu GeoGebra, Smart Embed Link z Canvy lub kod iframe.' })) : null;
+    const viewport = h('div', { class: 'iml-embed', style: { '--eh': (+p.height || 480) + 'px', aspectRatio: source.ratio || null, height: source.ratio ? 'auto' : null } });
+    const frame = h('iframe', { src: source.src, title: str(p.title) || (source.kind === 'canva' ? 'Prezentacja Canva' : source.kind === 'geogebra' ? 'GeoGebra' : 'Osadzona treść'), loading: 'lazy',
+      allow: 'fullscreen; clipboard-write; autoplay; encrypted-media; picture-in-picture', allowfullscreen: true, referrerpolicy: 'strict-origin-when-cross-origin',
+      sandbox: 'allow-scripts allow-same-origin allow-popups allow-forms allow-presentation allow-downloads' + (source.kind === 'canva' ? ' allow-popups-to-escape-sandbox allow-storage-access-by-user-activation' : '') });
+    viewport.append(frame);
+    const shell = h('div', { class: 'iml-embed-frame', 'data-embed-provider': source.kind }, viewport);
+    const fullscreen = h('button', { type: 'button', class: 'iml-btn iml-btn-ghost iml-btn-sm', 'data-ui': '1', onclick: () => {
+      if (doc.fullscreenElement === shell) { if (doc.exitFullscreen) doc.exitFullscreen(); }
+      else if (shell.requestFullscreen) shell.requestFullscreen().catch(() => {});
+    } }, 'Pełny ekran');
+    shell.append(h('div', { class: 'iml-embed-actions' }, h('a', { class: 'iml-btn iml-btn-ghost iml-btn-sm', href: source.link, target: '_blank', rel: 'noopener', 'data-ui': '1' }, 'Otwórz w nowej karcie'), fullscreen));
+    if (source.kind === 'geogebra') {
+      Object.assign(frame.style, { width: source.width + 'px', height: source.height + 'px', maxWidth: 'none', position: 'absolute', transformOrigin: '0 0' });
+      function resize() {
+        if (!viewport.isConnected || !viewport.clientWidth) return;
+        const scale = Math.min(viewport.clientWidth / source.width, viewport.clientHeight / source.height);
+        frame.style.transform = 'scale(' + scale + ')';
+        frame.style.left = (viewport.clientWidth - source.width * scale) / 2 + 'px';
+        frame.style.top = (viewport.clientHeight - source.height * scale) / 2 + 'px';
+      }
+      const observer = root.ResizeObserver ? new ResizeObserver(resize) : null;
+      if (observer) observer.observe(viewport);
+      const animation = requestAnimationFrame(resize);
+      shell.setAttribute('data-iml-managed', '1');
+      shell._imlDispose = () => { if (observer) observer.disconnect(); cancelAnimationFrame(animation); };
+    }
+    return shell;
   };
 
   function parseBlanks(text) {
@@ -1030,36 +1220,42 @@
   }
   R.blanks = (b, ctx) => {
     const p = b.props;
-    const parts = parseBlanks(p.text);
+    if (ctx.edit) {
+      return h('div', { class: 'iml-blanks' },
+        h('div', attrs({ class: 'iml-blanks-title iml-tex', html: sanitizeInline(p.title) }, ed(ctx, 'title', 'inline', 'Polecenie'))),
+        h('div', attrs({ class: 'iml-blanks-text iml-rich iml-tex', html: sanitizeHtml(p.text) }, ed(ctx, 'text', 'rich', 'Tekst z lukami, np. [Warszawa]'))));
+    }
     const st = ctx.state(b.id, () => ({ values: {}, checked: false, reported: false }));
     const box = h('div', { class: 'iml-blanks' });
     function draw() {
       box.replaceChildren();
-      if (p.title) box.append(h('div', { class: 'iml-blanks-title', text: str(p.title) }));
-      const textEl = h('div', { class: 'iml-blanks-text' });
+      if (p.title) box.append(h('div', { class: 'iml-blanks-title iml-tex', html: sanitizeInline(p.title) }));
+      const textEl = h('div', { class: 'iml-blanks-text iml-rich iml-tex', html: sanitizeHtml(p.text) });
+      const walker = doc.createTreeWalker(textEl, NodeFilter.SHOW_TEXT);
+      const textNodes = [];
+      while (walker.nextNode()) textNodes.push(walker.currentNode);
       let gi = 0;
       const inputs = [];
-      parts.forEach(part => {
-        if (part.text != null) { textEl.append(part.text); return; }
-        const idx = gi++;
-        if (ctx.edit) { textEl.append(h('span', { class: 'iml-gap-chip', text: part.gap.join(' / ') })); return; }
-        const longest = part.gap.reduce((a, s) => Math.max(a, s.length), 3);
-        const input = h('input', { class: 'iml-gap', type: 'text', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Luka ' + (idx + 1), style: { width: (longest + 3) + 'ch' } });
-        input.value = st.values[idx] || '';
-        input.addEventListener('input', () => { st.values[idx] = input.value; if (st.checked) { st.checked = false; input.classList.remove('iml-right', 'iml-wrong'); } });
-        if (st.checked) {
-          const v = p.caseSensitive ? str(input.value).trim() : normAnswer(input.value);
-          const ok = part.gap.some(g => (p.caseSensitive ? g.trim() : normAnswer(g)) === v);
-          input.classList.add(ok ? 'iml-right' : 'iml-wrong');
-        }
-        inputs.push({ input, part });
-        textEl.append(input);
+      textNodes.forEach(node => {
+        const fragment = doc.createDocumentFragment();
+        parseBlanks(node.textContent).forEach(part => {
+          if (part.text != null) { fragment.append(part.text); return; }
+          const idx = gi++;
+          const longest = part.gap.reduce((a, s) => Math.max(a, s.length), 3);
+          const input = h('input', { class: 'iml-gap', type: 'text', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Luka ' + (idx + 1), style: { width: (longest + 3) + 'ch' } });
+          input.value = st.values[idx] || '';
+          input.addEventListener('input', () => { st.values[idx] = input.value; if (st.checked) { st.checked = false; input.classList.remove('iml-right', 'iml-wrong'); } });
+          if (st.checked) {
+            const v = p.caseSensitive ? str(input.value).trim() : normAnswer(input.value);
+            const ok = part.gap.some(g => (p.caseSensitive ? g.trim() : normAnswer(g)) === v);
+            input.classList.add(ok ? 'iml-right' : 'iml-wrong');
+          }
+          inputs.push({ input, part });
+          fragment.append(input);
+        });
+        node.replaceWith(fragment);
       });
       box.append(textEl);
-      if (ctx.edit) {
-        if (!parts.some(x => x.gap)) box.append(h('div', { class: 'iml-quiz-hint', style: { marginTop: '8px' }, text: 'Wpisz tekst w panelu po prawej i umieść odpowiedzi w nawiasach kwadratowych, np. [Warszawa].' }));
-        return;
-      }
       if (st.checked) {
         const good = box.querySelectorAll('.iml-gap.iml-right').length;
         box.append(h('div', { class: 'iml-feedback iml-pop ' + (good === inputs.length ? 'iml-ok' : 'iml-no') }, h('strong', { text: 'Poprawne: ' + good + ' z ' + inputs.length })));
@@ -1139,6 +1335,7 @@
 
   function cleanup(el) {
     if (!el || !el.querySelectorAll) return;
+    [el, ...el.querySelectorAll('[data-iml-managed]')].forEach(node => { if (node._imlDispose) { node._imlDispose(); node._imlDispose = null; } });
     el.querySelectorAll('canvas').forEach(c => { if (c._imlChart) { try { c._imlChart.destroy(); } catch (_) {} c._imlChart = null; } });
   }
 
@@ -1176,6 +1373,7 @@
     sections.forEach(s => docEl.append(s));
 
     const steps = !edit && lesson.theme.mode === 'steps' && sections.length > 1;
+    const footer = h('div', { class: 'iml-footer' });
     let bar = null, stepIndex = 0, stepLabel = null, prevBtn = null, nextBtn = null;
     if (!edit && lesson.theme.progress !== false && sections.length > 1) {
       bar = h('i');
@@ -1214,12 +1412,25 @@
     }
 
     if (steps) {
-      prevBtn = h('button', { type: 'button', class: 'iml-btn iml-btn-ghost', onclick: () => goTo(stepIndex - 1) }, icon('left'), 'Wstecz');
-      nextBtn = h('button', { type: 'button', class: 'iml-btn iml-btn-primary', onclick: () => goTo(stepIndex + 1) }, h('span', { text: 'Dalej' }), icon('right'));
-      stepLabel = h('span', { class: 'iml-steplabel' });
-      rootEl.append(h('div', { class: 'iml-stepnav', role: 'navigation', 'aria-label': 'Nawigacja lekcji' }, prevBtn, stepLabel, nextBtn));
+      prevBtn = h('button', { type: 'button', class: 'iml-btn iml-btn-ghost', onclick: () => { goTo(stepIndex - 1); rootEl.focus({ preventScroll: true }); } }, icon('left'), 'Wstecz');
+      nextBtn = h('button', { type: 'button', class: 'iml-btn iml-btn-primary', onclick: () => { goTo(stepIndex + 1); rootEl.focus({ preventScroll: true }); } }, h('span', { text: 'Dalej' }), icon('right'));
+      stepLabel = h('span', { class: 'iml-steplabel', 'aria-live': 'polite' });
+      footer.append(h('div', { class: 'iml-stepnav', role: 'navigation', 'aria-label': 'Nawigacja lekcji' }, prevBtn, stepLabel, nextBtn));
+      rootEl.tabIndex = 0;
+      rootEl.setAttribute('aria-keyshortcuts', 'Space ArrowDown ArrowRight ArrowUp ArrowLeft');
+      rootEl.addEventListener('keydown', event => {
+        if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
+        const controls = 'input,textarea,select,button,a,[contenteditable],math-field,[role="button"],audio,video,iframe';
+        if (event.composedPath().some(node => node.matches && node.matches(controls))) return;
+        const forward = event.key === ' ' || event.key === 'Spacebar' || event.key === 'ArrowDown' || event.key === 'ArrowRight';
+        const backward = event.key === 'ArrowUp' || event.key === 'ArrowLeft';
+        if (!forward && !backward) return;
+        event.preventDefault();
+        if (!event.repeat) goTo(stepIndex + (forward ? 1 : -1));
+      });
     }
-    if (finishEl) rootEl.append(finishEl);
+    if (finishEl) footer.append(finishEl);
+    if (steps || finishEl) rootEl.append(footer);
     if (steps) goTo(0, false);
     else if (bar && 'IntersectionObserver' in root) {
       let seen = 0;
@@ -1399,7 +1610,7 @@
     render, renderBlock: renderOne, normalize, cleanup, typeset, injectCss,
     sanitizeHtml, sanitizeInline, escapeHtml, htmlToText, safeUrl, hasMath,
     ensureKatex, ensureChart, ensureMathLive, loadScript, loadCss,
-    parseVideo, parseChartData, parseBlanks, ratioParts, setPath, getPath, uid, icon, countBlocks,
+    parseVideo, parseEmbed, parseChartData, parseBlanks, ratioParts, setPath, getPath, uid, icon, countBlocks,
     encodeShare, decodeShare, fetchLesson, loadFromLocation, library, mountAll, openLightbox
   });
 })(typeof window !== 'undefined' ? window : this);
