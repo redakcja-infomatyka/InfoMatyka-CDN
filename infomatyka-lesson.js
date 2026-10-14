@@ -12,7 +12,7 @@
   'use strict';
   if (root.InfoMatykaLesson && root.InfoMatykaLesson.VERSION) return;
 
-  const VERSION = '1.3.0';
+  const VERSION = '1.4.0';
   const FORMAT = 'infomatyka-lesson';
   const doc = root.document;
   const VIEWER_URL = 'https://www.infomatyka.pl/p/lekcja.html';
@@ -240,6 +240,7 @@
     eye: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
     image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/>',
     pen: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+    cursor: '<path d="M9 4h6M9 20h6M12 4v16M8 12h8"/>',
     trophy: '<path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6M18 9h1.5a2.5 2.5 0 0 0 0-5H18M4 22h16M10 14.7V17c0 .6-.5 1-1 1.2C7.9 18.8 7 20.2 7 22M14 14.7V17c0 .6.5 1 1 1.2 1.2.6 2 2 2 3.8M18 2H6v7a6 6 0 0 0 12 0V2z"/>'
   };
   function icon(name, cls) {
@@ -509,13 +510,17 @@
 .iml .iml-embed-frame:fullscreen{display:flex;flex-direction:column;background:#fff;padding:12px}
 .iml .iml-embed-frame:fullscreen .iml-embed{flex:1;min-height:0;height:auto!important;aspect-ratio:auto!important}
 
-.iml .iml-blanks{padding:clamp(16px,2.8cqi,22px)}
+.iml .iml-blanks-body{padding:clamp(16px,2.8cqi,22px)}
+.iml .iml-blanks-head{background:#fff7e6;border-bottom-color:#fdebc8}
+.iml .iml-blanks-head .iml-quiz-badge{background:#f59e0b}
+.iml .iml-blanks-head .iml-quiz-title{color:#92400e}
+.iml .iml-blanks-head .iml-quiz-count{background:#fdecc8;color:#92400e}
 .iml .iml-blanks-title{font-weight:700;margin-bottom:10px;color:var(--ink)}
 .iml .iml-blanks-text{line-height:2.3;color:#334155}
 .iml .iml-gap{display:inline-block;width:auto;min-width:3.5em;height:32px;margin:0 3px;padding:3px 8px;border:0;border-bottom:2px solid #94a3b8;border-radius:6px 6px 0 0;background:#f1f5f9;color:var(--ink);font:inherit;font-weight:600;text-align:center;vertical-align:baseline;box-shadow:none}
 .iml .iml-gap:focus{outline:none;border-bottom-color:var(--a);background:var(--a-soft)}
 .iml .iml-gap.iml-right{border-bottom-color:var(--ok);background:var(--ok-soft);color:#14532d}.iml .iml-gap.iml-wrong{border-bottom-color:var(--bad);background:var(--bad-soft);color:#7f1d1d}
-.iml .iml-gap-chip{display:inline-block;margin:0 3px;padding:0 10px;border-bottom:2px solid var(--a);border-radius:6px 6px 0 0;background:var(--a-soft);color:var(--a-ink);font-weight:600;line-height:1.7}
+.iml .iml-gap-chip{display:inline-block;min-width:3.5em;text-align:center;margin:0 3px;padding:0 10px;border-bottom:2px solid var(--a);border-radius:6px 6px 0 0;background:var(--a-soft);color:var(--a-ink);font-weight:600;line-height:1.7}
 .iml .iml-acc{border:1px solid var(--line);border-radius:12px;background:#fff;overflow:hidden}
 .iml .iml-acc-sum{display:flex;align-items:center;gap:10px;padding:14px 16px;font-weight:700;color:var(--ink);cursor:pointer;list-style:none}
 .iml .iml-acc-sum::-webkit-details-marker{display:none}
@@ -1167,7 +1172,8 @@
     const p = b.props;
     const rows = arr(p.rows).length ? arr(p.rows) : [['', ''], ['', '']];
     const ncol = Math.max.apply(null, rows.map(r => arr(r).length).concat(1));
-    const table = h('table', { class: 'iml-table' + (p.autoFit ? ' iml-table-auto' : '') + (p.striped !== false ? ' iml-striped' : '') });
+    const fixedWidth = !p.autoFit && +p.tableWidth > 0 ? Math.round(+p.tableWidth) : 0;
+    const table = h('table', { class: 'iml-table' + (p.autoFit ? ' iml-table-auto' : '') + (p.striped !== false ? ' iml-striped' : ''), style: { width: fixedWidth ? fixedWidth + 'px' : null } });
     const widths = tableColumnWidths(p.columnWidths, ncol);
     table.append(h('colgroup', null, widths.map(width => h('col', { style: { width: p.autoFit ? null : width + '%' } }))));
     const mk = (tag, ri, ci) => {
@@ -1185,9 +1191,16 @@
     const tbody = h('tbody');
     for (let ri = start; ri < rows.length; ri++) tbody.append(h('tr', { style: { height: +arr(p.rowHeights)[ri] > 0 ? clamp(+p.rowHeights[ri], 32, 2000) + 'px' : null } }, Array.from({ length: ncol }, (_, ci) => mk('td', ri, ci))));
     table.append(tbody);
-    const wrap = h('div', { class: 'iml-table-wrap' + (p.autoFit ? ' iml-table-wrap-auto' : '') }, table);
+    const wrap = h('div', { class: 'iml-table-wrap' + (p.autoFit || fixedWidth ? ' iml-table-wrap-auto' : '') }, table);
     if (ctx.edit) tableResizers(wrap, table, (axis, value, focusIndex) => {
-      if (axis === 'column') p.autoFit = false;
+      if (axis === 'column') {
+        // Węższa tabela (dopasowana do treści albo już zwężona) zachowuje swoją szerokość – zmieniają się tylko kolumny.
+        if (p.autoFit || fixedWidth) {
+          const w = Math.round(table.offsetWidth), full = wrap.parentElement ? wrap.parentElement.clientWidth : 0;
+          ctx.change(b.id, 'tableWidth', w > 0 && (!full || w < full - 2) ? w : null);
+        }
+        p.autoFit = false;
+      }
       ctx.change(b.id, axis === 'column' ? 'columnWidths' : 'rowHeights', value);
       if (focusIndex != null) requestAnimationFrame(() => {
         const block = Array.from(ctx.rootEl.querySelectorAll('[data-block-id]')).find(el => el.getAttribute('data-block-id') === b.id);
@@ -1274,18 +1287,41 @@
     if (last < t.length) parts.push({ text: t.slice(last) });
     return parts;
   }
+  function gapWord(n) { const d = n % 10, t = n % 100; return n === 1 ? 'luka' : (d >= 2 && d <= 4 && (t < 12 || t > 14)) ? 'luki' : 'luk'; }
+  function blanksHead(ctx, p, count, editable) {
+    return h('div', { class: 'iml-quiz-head iml-blanks-head' },
+      h('span', { class: 'iml-quiz-badge' }, icon('cursor')),
+      h('span', attrs({ class: 'iml-quiz-title iml-tex', html: sanitizeInline(p.title) || (editable ? '' : 'Uzupełnij luki') }, editable ? ed(ctx, 'title', 'inline', 'Uzupełnij luki') : {})),
+      h('span', { class: 'iml-quiz-count', text: count + ' ' + gapWord(count) }));
+  }
+  // W tekście zamienia [odpowiedź] na element (pole do wpisania albo podgląd luki w edytorze).
+  function replaceGaps(textEl, makeGap) {
+    const walker = doc.createTreeWalker(textEl, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    let gi = 0;
+    nodes.forEach(node => {
+      if (node.nodeValue.indexOf('[') < 0) return;
+      const fragment = doc.createDocumentFragment();
+      parseBlanks(node.nodeValue).forEach(part => { if (part.text != null) fragment.append(part.text); else fragment.append(makeGap(part, gi++)); });
+      node.replaceWith(fragment);
+    });
+    return gi;
+  }
   R.blanks = (b, ctx) => {
     const p = b.props;
     if (ctx.edit) {
-      return h('div', { class: 'iml-blanks' },
-        h('div', attrs({ class: 'iml-blanks-title iml-tex', html: sanitizeInline(p.title) }, ed(ctx, 'title', 'inline', 'Polecenie'))),
-        h('div', attrs({ class: 'iml-blanks-text iml-rich iml-tex', html: sanitizeHtml(p.text) }, ed(ctx, 'text', 'rich', 'Tekst z lukami, np. [Warszawa]'))));
+      const textEl = h('div', attrs({ class: 'iml-blanks-text iml-rich iml-tex', html: sanitizeHtml(p.text) }, ed(ctx, 'text', 'rich', 'Tekst z lukami, np. Stolica Polski to [Warszawa].')));
+      const count = replaceGaps(textEl, part => h('span', { class: 'iml-gap-chip', title: 'Odpowiedź: ' + part.gap.join(' / ') }, part.gap[0]));
+      return h('div', { class: 'iml-blanks' }, blanksHead(ctx, p, count, true),
+        h('div', { class: 'iml-blanks-body' }, textEl,
+          h('div', { class: 'iml-quiz-hint', style: { marginTop: '10px' }, text: 'Odpowiedzi wpisz w nawiasach kwadratowych, np. [Warszawa]; kilka wersji: [4|cztery]. Kliknij tekst, aby edytować.' })));
     }
     const st = ctx.state(b.id, () => ({ values: {}, checked: false, reported: false }));
     const box = h('div', { class: 'iml-blanks' });
     function draw() {
       box.replaceChildren();
-      if (p.title) box.append(h('div', { class: 'iml-blanks-title iml-tex', html: sanitizeInline(p.title) }));
+      const body = h('div', { class: 'iml-blanks-body' });
       const textEl = h('div', { class: 'iml-blanks-text iml-rich iml-tex', html: sanitizeHtml(p.text) });
       const walker = doc.createTreeWalker(textEl, NodeFilter.SHOW_TEXT);
       const textNodes = [];
@@ -1311,13 +1347,14 @@
         });
         node.replaceWith(fragment);
       });
-      box.append(textEl);
+      box.append(blanksHead(ctx, p, inputs.length, false), body);
+      body.append(textEl);
       if (st.checked) {
         const good = box.querySelectorAll('.iml-gap.iml-right').length;
-        box.append(h('div', { class: 'iml-feedback iml-pop ' + (good === inputs.length ? 'iml-ok' : 'iml-no') }, h('strong', { text: 'Poprawne: ' + good + ' z ' + inputs.length })));
+        body.append(h('div', { class: 'iml-feedback iml-pop ' + (good === inputs.length ? 'iml-ok' : 'iml-no') }, h('strong', { text: 'Poprawne: ' + good + ' z ' + inputs.length })));
         if (!st.reported && good === inputs.length) { st.reported = true; report(ctx, { type: 'quiz', name: (str(p.title) || 'Uzupełnij luki') + ' — ' + ctx.lesson.title, score: good, maxScore: inputs.length, blockId: b.id }); }
       }
-      box.append(h('div', { class: 'iml-actions' },
+      body.append(h('div', { class: 'iml-actions' },
         h('button', { type: 'button', class: 'iml-btn iml-btn-ghost', onclick: () => { inputs.forEach((x, i) => { st.values[i] = x.part.gap[0]; }); st.checked = true; draw(); } }, 'Pokaż odpowiedzi'),
         h('button', { type: 'button', class: 'iml-btn iml-btn-primary', onclick: () => { st.checked = true; draw(); } }, h('span', { text: 'Sprawdź' }), icon('right'))
       ));
