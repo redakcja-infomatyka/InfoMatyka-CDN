@@ -12,7 +12,7 @@
   'use strict';
   if (root.InfoMatykaLesson && root.InfoMatykaLesson.VERSION) return;
 
-  const VERSION = '1.2.0';
+  const VERSION = '1.3.0';
   const FORMAT = 'infomatyka-lesson';
   const doc = root.document;
   const VIEWER_URL = 'https://www.infomatyka.pl/p/lekcja.html';
@@ -335,6 +335,56 @@
 .iml .iml-card-accent{border-top:4px solid var(--a)}
 .iml .iml-cols{display:grid;gap:var(--gap,24px);align-items:var(--valign,start)}
 @container (max-width:680px){.iml .iml-cols.iml-stack{grid-template-columns:1fr!important}.iml .iml-hide-mobile{display:none!important}}
+.iml .iml-block{display:flow-root}
+.iml .iml-b-text,.iml .iml-b-heading{display:block}
+.iml .iml-block.iml-float-left{float:left;clear:left;max-width:100%;margin:4px 26px 14px 0}
+.iml .iml-block.iml-float-right{float:right;clear:right;max-width:100%;margin:4px 0 14px 26px}
+.iml .iml-slot>.iml-block.iml-float-left:last-child,.iml .iml-slot>.iml-block.iml-float-right:last-child{margin-bottom:14px}
+@container (max-width:560px){.iml .iml-block.iml-float-left,.iml .iml-block.iml-float-right{float:none;width:auto!important;margin:0 0 18px}}
+.iml-view .iml-block{scroll-margin-top:28px}
+.iml .iml-toc{padding:18px 20px;border:1px solid var(--line);border-radius:var(--r);background:#fff;text-align:left}
+.iml .iml-toc-title{margin:0 0 10px;font:800 1.08em/1.3 var(--hfont);color:var(--ink)}
+.iml .iml-toc-list{list-style:none;margin:0;padding:0;display:grid;gap:2px}
+.iml .iml-toc-list li{margin:0;padding:0;list-style:none;background:none}
+.iml .iml-toc-list li::before{display:none}
+.iml .iml-toc-list a{display:flex;gap:8px;padding:6px 10px;border-radius:8px;color:#334155;text-decoration:none;line-height:1.4;cursor:pointer}
+.iml .iml-toc-list a:hover{background:var(--a-soft);color:var(--a-ink)}
+.iml .iml-toc-list a.iml-on{background:var(--a-soft);color:var(--a-ink);font-weight:650;box-shadow:inset 3px 0 0 var(--a)}
+.iml .iml-toc-l1>a{font-weight:700;color:var(--ink)}
+.iml .iml-toc-l2>a{padding-left:22px}.iml .iml-toc-l3>a{padding-left:38px;font-size:.94em}
+.iml .iml-toc-n{flex:none;color:var(--muted);font-variant-numeric:tabular-nums}
+.iml .iml-toc-empty{color:var(--muted);font-size:.92em}
+.iml .iml-layout{display:flex;align-items:flex-start;justify-content:center;width:100%}
+.iml .iml-layout>.iml-doc,.iml .iml-layout>.iml-book-stage{flex:1 1 auto;min-width:0}
+.iml .iml-toc-side{position:sticky;top:12px;flex:none;width:250px;max-height:calc(100vh - 24px);overflow:auto;margin:clamp(12px,3cqi,28px) 0 0 16px;z-index:6}
+.iml .iml-toc-side .iml-toc{box-shadow:0 2px 12px #0f172a0d}
+.iml .iml-toc-head{display:none;justify-content:flex-end;margin-bottom:6px}
+.iml .iml-toc-fab{display:none;position:fixed;right:16px;bottom:16px;z-index:2147482000;box-shadow:0 6px 20px #0f172a33}
+.iml.iml-book .iml-toc-fab{bottom:84px}
+.iml .iml-toc-shade{display:none}
+@container (max-width:980px){
+.iml .iml-toc-side{position:fixed;top:0;left:0;bottom:0;width:min(320px,86vw);max-height:none;margin:0;padding:12px;z-index:2147482500;transform:translateX(-105%);transition:transform .25s;background:var(--bg);box-shadow:0 0 40px #0f172a40}
+.iml.iml-toc-open .iml-toc-side{transform:none}
+.iml.iml-toc-open .iml-toc-shade{display:block;position:fixed;inset:0;z-index:2147482400;background:#0f172a55}
+.iml .iml-toc-fab{display:inline-flex}.iml .iml-toc-head{display:flex}}
+.iml.iml-book{background:var(--book-bg,#e8edf3)}
+.iml.iml-book .iml-book-stage{position:relative;overflow-x:auto;overflow-y:visible;padding:0 0 8px}
+.iml.iml-book .iml-doc{display:flex;align-items:stretch;justify-content:center;width:max-content;min-width:100%;max-width:none;margin:0 auto;padding:22px 64px}
+.iml.iml-book .iml-section.iml-page{position:relative;flex:none;width:var(--pw,760px);min-height:calc(var(--pw,760px) * 1.3);margin:0;padding:52px 56px 70px;border:1px solid #dde3ea;border-radius:6px;background:#fff;box-shadow:0 3px 18px #0f172a1c}
+.iml.iml-book .iml-section.iml-page.iml-left{border-radius:6px 0 0 6px;box-shadow:inset -14px 0 18px -16px #0f172a40,0 3px 18px #0f172a1c}
+.iml.iml-book .iml-section.iml-page.iml-right{border-radius:0 6px 6px 0;border-left-color:#eef1f5;box-shadow:inset 14px 0 18px -16px #0f172a40,0 3px 18px #0f172a1c}
+.iml .iml-pageno{position:absolute;left:0;right:0;bottom:22px;text-align:center;font-size:13px;font-weight:600;color:#94a3b8;pointer-events:none}
+.iml .iml-book-arrows{position:sticky;top:45%;height:0;z-index:8}
+.iml .iml-book-arrow{position:absolute;top:0;display:grid;place-items:center;width:46px;height:46px;padding:0;border:1px solid var(--line);border-radius:50%;background:#fff;color:var(--a);cursor:pointer;box-shadow:0 4px 14px #0f172a26}
+.iml .iml-book-arrow.iml-prev{left:10px}.iml .iml-book-arrow.iml-next{right:10px}
+.iml .iml-book-arrow[disabled]{opacity:.3;cursor:default}
+.iml .iml-book-arrow svg{width:22px;height:22px}
+.iml .iml-booknav{position:sticky;bottom:0;z-index:20;display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:6px;padding:10px 12px;border-top:1px solid var(--line);background:#fffffff0;backdrop-filter:blur(6px)}
+.iml .iml-booknav .iml-btn{min-height:38px;padding:7px 12px;font-size:14px}
+.iml .iml-pagelabel{min-width:104px;padding:7px 12px;border:1px solid var(--line);border-radius:9px;background:#fff;text-align:center;font-weight:650;font-variant-numeric:tabular-nums}
+.iml .iml-zoomlabel{min-width:58px;text-align:center;font-weight:600;color:var(--muted);font-variant-numeric:tabular-nums}
+.iml .iml-booknav .iml-vsep{width:1px;height:26px;margin:0 4px;background:var(--line)}
+@container (max-width:700px){.iml.iml-book .iml-doc{padding:14px 10px}.iml.iml-book .iml-section.iml-page{padding:30px 22px 54px}.iml .iml-book-arrows{display:none}}
 .iml .iml-callout{display:flex;gap:14px;align-items:flex-start;padding:16px 18px;border-radius:12px;background:#eaf4ff;color:#163a63;border:1px solid #d5e7fb}
 .iml .iml-callout .iml-ico{flex:none;margin-top:1px;color:#1677e6}.iml .iml-callout .iml-ico svg{width:26px;height:26px}
 .iml .iml-callout-body{flex:1;min-width:0}
@@ -530,7 +580,7 @@
       tags: arr(lesson.tags).map(str),
       createdAt: lesson.createdAt || new Date().toISOString(),
       updatedAt: lesson.updatedAt || new Date().toISOString(),
-      theme: Object.assign({ accent: '#1677e6', bg: '#f4f7fb', font: 'dm', sections: 'cards', mode: 'scroll', maxWidth: 1100, progress: true, finish: true }, isObj(lesson.theme) ? lesson.theme : {}),
+      theme: Object.assign({ accent: '#1677e6', bg: '#f4f7fb', font: 'dm', sections: 'cards', mode: 'scroll', maxWidth: 1100, progress: true, finish: true, toc: 'none', pageWidth: 760 }, isObj(lesson.theme) ? lesson.theme : {}),
       sections: arr(lesson.sections).filter(isObj).map(s => ({
         id: str(s.id) || uid('s'),
         title: str(s.title),
@@ -1285,6 +1335,45 @@
   };
 
   /* --------------------------------------------------------- block/section */
+  // Nagłówki lekcji (w kolejności) do spisu treści. overrides: { [idBloku]: { hide, text } }
+  function collectHeadings(lesson, maxLevel, overrides) {
+    const out = [], ov = isObj(overrides) ? overrides : {};
+    const walk = (list, si) => arr(list).forEach(b => {
+      if (!b || !b.props) return;
+      if (b.type === 'heading') {
+        const lvl = [1, 2, 3].indexOf(+b.props.level) >= 0 ? +b.props.level : 1;
+        const o = isObj(ov[b.id]) ? ov[b.id] : {};
+        const text = str(o.text).trim() || htmlToText(b.props.text);
+        if (lvl <= (maxLevel || 3) && !o.hide && text) out.push({ id: b.id, level: lvl, text, section: si, original: htmlToText(b.props.text) });
+      }
+      walk(b.props.blocks, si);
+      arr(b.props.columns).forEach(c => walk(c && c.blocks, si));
+    });
+    arr(lesson.sections).forEach((sec, si) => walk(sec.blocks, si));
+    return out;
+  }
+  function tocList(items, numbered, onPick) {
+    const ol = h('ol', { class: 'iml-toc-list' });
+    const n = [0, 0, 0], top = Math.min.apply(null, items.map(it => it.level).concat(3));
+    items.forEach(it => {
+      const depth = it.level - top;
+      n[depth]++; for (let i = depth + 1; i < 3; i++) n[i] = 0;
+      const num = numbered ? n.slice(0, depth + 1).map(x => x || 1).join('.') + '.' : '';
+      ol.append(h('li', { class: 'iml-toc-l' + (depth + 1) }, h('a', { href: '#', 'data-target': it.id, onclick: e => { e.preventDefault(); onPick(it.id); } },
+        num ? h('span', { class: 'iml-toc-n', text: num }) : null, h('span', { class: 'iml-tex', text: it.text }))));
+    });
+    return ol;
+  }
+  R.toc = (b, ctx) => {
+    const p = b.props;
+    const items = collectHeadings(ctx.lesson, +p.maxLevel || 3, p.overrides);
+    const box = h('div', { class: 'iml-toc', role: 'navigation', 'aria-label': str(p.title) || 'Spis treści' });
+    box.append(h('div', attrs({ class: 'iml-toc-title', text: p.title == null ? 'Spis treści' : str(p.title) }, ed(ctx, 'title', 'plain', 'Spis treści'))));
+    if (!items.length) { box.append(h('div', { class: 'iml-toc-empty', text: ctx.edit ? 'Dodaj nagłówki do lekcji – pojawią się tutaj automatycznie.' : 'Brak nagłówków.' })); return box; }
+    box.append(tocList(items, !!p.numbered, id => { if (!ctx.edit && ctx.navigate) ctx.navigate(id); }));
+    return box;
+  };
+
   function applyStyle(el, s, type) {
     if (!isObj(s)) return;
     if (s.align) el.setAttribute('data-align', s.align);
@@ -1298,7 +1387,10 @@
     if (s.shadow) el.classList.add('iml-shadow');
     if (s.mt != null && s.mt !== '') el.style.marginTop = (+s.mt) + 'px';
     if (s.mb != null && s.mb !== '') el.style.marginBottom = (+s.mb) + 'px';
-    if (s.maxWidth) {
+    if (s.float === 'left' || s.float === 'right') {
+      el.classList.add('iml-float-' + s.float);
+      el.style.width = s.maxWidth ? (+s.maxWidth) + 'px' : '42%';
+    } else if (s.maxWidth) {
       el.style.maxWidth = (+s.maxWidth) + 'px';
       if (s.align === 'center') el.style.marginLeft = el.style.marginRight = 'auto';
       else if (s.align === 'right') el.style.marginLeft = 'auto';
@@ -1372,34 +1464,102 @@
     const ctx = {
       edit, lesson, rootEl,
       state(id, init) { if (!ui.has(id)) ui.set(id, init()); return ui.get(id); },
-      change: opts.change || function () {}
+      change: opts.change || function () {},
+      navigate: id => navigate(id)
     };
     const docEl = h('div', { class: 'iml-doc' });
     const sections = lesson.sections.map((s, i) => renderSection(s, ctx, i));
     sections.forEach(s => docEl.append(s));
+    const n = sections.length;
 
-    const steps = !edit && lesson.theme.mode === 'steps' && sections.length > 1;
+    const mode = lesson.theme.mode;
+    const paged = !edit && (mode === 'steps' || mode === 'pages') && n > 1;
+    const book = paged && mode === 'pages';
     const footer = h('div', { class: 'iml-footer' });
-    let bar = null, stepIndex = 0, stepLabel = null, prevBtn = null, nextBtn = null;
-    if (!edit && lesson.theme.progress !== false && sections.length > 1) {
+    let bar = null, stepIndex = 0, perView = 1, stepLabel = null, prevBtn = null, nextBtn = null;
+    let arrowPrev = null, arrowNext = null, zoomLabel = null, viewBtn = null, userZoom = 1, viewPref = 'auto';
+    if (!edit && lesson.theme.progress !== false && n > 1) {
       bar = h('i');
       rootEl.append(h('div', { class: 'iml-progress', role: 'progressbar', 'aria-label': 'Postęp lekcji' }, bar));
     }
-    rootEl.append(docEl);
+
+    // Strona po stronie: każda sekcja to kartka; jedna lub dwie strony obok siebie, z powiększaniem.
+    let stage = docEl;
+    if (book) {
+      rootEl.classList.add('iml-book');
+      rootEl.style.setProperty('--pw', clamp(+lesson.theme.pageWidth || 760, 420, 1400) + 'px');
+      sections.forEach((s, i) => { s.classList.add('iml-page'); s.append(h('div', { class: 'iml-pageno', text: String(i + 1) })); });
+      arrowPrev = h('button', { type: 'button', class: 'iml-book-arrow iml-prev', 'aria-label': 'Poprzednia strona', onclick: () => goTo(stepIndex - perView) }, icon('chevL'));
+      arrowNext = h('button', { type: 'button', class: 'iml-book-arrow iml-next', 'aria-label': 'Następna strona', onclick: () => goTo(stepIndex + perView) }, icon('chevR'));
+      stage = h('div', { class: 'iml-book-stage' }, h('div', { class: 'iml-book-arrows' }, arrowPrev, arrowNext), docEl);
+      try { const saved = JSON.parse(root.localStorage.getItem('infomatyka-lesson-book-view') || '{}'); if (saved.view === 1 || saved.view === 2) viewPref = saved.view; } catch (_) {}
+    }
+
+    // Spis treści z boku (przewija się razem z lekcją i podświetla bieżące miejsce).
+    let tocLinks = [], tocHeads = [];
+    const tocItems = !edit && lesson.theme.toc === 'side' ? collectHeadings(lesson, 3, findTocOverrides(lesson)) : [];
+    if (tocItems.length) {
+      tocHeads = tocItems;
+      const list = tocList(tocItems, false, id => navigate(id));
+      tocLinks = Array.from(list.querySelectorAll('a'));
+      const aside = h('div', { class: 'iml-toc-side', role: 'navigation', 'aria-label': 'Spis treści' },
+        h('div', { class: 'iml-toc-head' }, h('button', { type: 'button', class: 'iml-btn iml-btn-ghost iml-btn-sm', onclick: () => rootEl.classList.remove('iml-toc-open') }, icon('x'), 'Zamknij')),
+        h('div', { class: 'iml-toc' }, h('div', { class: 'iml-toc-title', text: str(lesson.theme.tocTitle) || 'Spis treści' }), list));
+      rootEl.classList.add('iml-with-toc');
+      rootEl.append(h('div', { class: 'iml-layout' }, aside, stage));
+      rootEl.append(h('div', { class: 'iml-toc-shade', onclick: () => rootEl.classList.remove('iml-toc-open') }));
+      rootEl.append(h('button', { type: 'button', class: 'iml-btn iml-btn-primary iml-toc-fab', onclick: () => rootEl.classList.toggle('iml-toc-open') }, icon('book'), 'Spis treści'));
+    } else rootEl.append(stage);
 
     function setProgress(frac) { if (bar) bar.style.width = Math.round(clamp(frac, 0, 1) * 100) + '%'; }
+    function markToc(id) { tocLinks.forEach(a => a.classList.toggle('iml-on', a.getAttribute('data-target') === id)); }
+    function lastIndex() { return Math.min(n, stepIndex + perView) - 1; }
     function goTo(i, scroll) {
-      if (!steps) { const s = sections[i]; if (s) s.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
-      stepIndex = clamp(i, 0, sections.length - 1);
-      sections.forEach((s, j) => { s.hidden = j !== stepIndex; });
-      sections[stepIndex].classList.remove('iml-pop'); void sections[stepIndex].offsetWidth; sections[stepIndex].classList.add('iml-pop');
-      stepLabel.textContent = 'Krok ' + (stepIndex + 1) + ' z ' + sections.length;
+      if (!paged) { const s = sections[i]; if (s) s.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+      i = clamp(i, 0, n - 1);
+      stepIndex = book ? i - (i % perView) : i;
+      const last = lastIndex();
+      sections.forEach((s, j) => {
+        s.hidden = j < stepIndex || j > last;
+        s.classList.toggle('iml-left', book && perView === 2 && j === stepIndex && last > stepIndex);
+        s.classList.toggle('iml-right', book && perView === 2 && j === last && last > stepIndex);
+      });
+      const first = sections[stepIndex];
+      first.classList.remove('iml-pop'); void first.offsetWidth; first.classList.add('iml-pop');
+      if (book) stepLabel.textContent = (last > stepIndex ? (stepIndex + 1) + '–' + (last + 1) : String(stepIndex + 1)) + ' / ' + n;
+      else stepLabel.textContent = 'Krok ' + (stepIndex + 1) + ' z ' + n;
       prevBtn.disabled = stepIndex === 0;
-      nextBtn.hidden = stepIndex === sections.length - 1;
-      if (finishEl) finishEl.hidden = stepIndex !== sections.length - 1;
-      setProgress((stepIndex + 1) / sections.length);
+      if (book) { nextBtn.disabled = last >= n - 1; arrowPrev.disabled = prevBtn.disabled; arrowNext.disabled = nextBtn.disabled; }
+      else nextBtn.hidden = last >= n - 1;
+      if (finishEl) finishEl.hidden = last !== n - 1;
+      setProgress((last + 1) / n);
+      const head = tocHeads.find(t => t.section >= stepIndex && t.section <= last) || tocHeads.filter(t => t.section < stepIndex).pop();
+      if (head) markToc(head.id);
       if (scroll !== false) rootEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
+    function navigate(id) {
+      const el = Array.from(rootEl.querySelectorAll('[data-block-id]')).find(x => x.getAttribute('data-block-id') === id);
+      if (!el) return;
+      rootEl.classList.remove('iml-toc-open');
+      const idx = sections.indexOf(el.closest('.iml-section'));
+      if (paged && idx >= 0 && (idx < stepIndex || idx > lastIndex())) goTo(idx, false);
+      markToc(id);
+      requestAnimationFrame(() => el.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    }
+
+    // Powiększenie: 100% = strona(y) dopasowane do szerokości ekranu.
+    function layoutBook(keepIndex) {
+      const avail = Math.max(280, stage.clientWidth - 24);
+      const pw = clamp(+lesson.theme.pageWidth || 760, 420, 1400);
+      const want = viewPref === 'auto' ? (avail >= pw * 1.35 ? 2 : 1) : viewPref;
+      if (want !== perView) { perView = want; goTo(keepIndex != null ? keepIndex : stepIndex, false); }
+      const pad = avail < 700 ? 20 : 128;
+      const fit = Math.min(1, (avail - pad) / (perView * pw));
+      docEl.style.zoom = String(Math.max(0.2, fit * userZoom));
+      zoomLabel.textContent = Math.round(userZoom * 100) + '%';
+      viewBtn.lastChild.textContent = perView === 2 ? 'Dwie strony' : 'Jedna strona';
+    }
+    function setZoom(z) { userZoom = clamp(z, 0.5, 3); layoutBook(); }
 
     let finishEl = null;
     if (!edit && lesson.theme.finish !== false) {
@@ -1417,30 +1577,53 @@
       finishEl = h('div', { class: 'iml-finish' }, h('div', { class: 'iml-finish-card' }, icon('flag'), h('div', { class: 'iml-finish-text' }, h('strong', { text: 'To już koniec lekcji!' }), h('span', { text: 'Przejrzyj jeszcze raz trudniejsze fragmenty albo oznacz lekcję jako ukończoną.' })), btn));
     }
 
-    if (steps) {
-      prevBtn = h('button', { type: 'button', class: 'iml-btn iml-btn-ghost', onclick: () => { goTo(stepIndex - 1); rootEl.focus({ preventScroll: true }); } }, icon('left'), 'Wstecz');
-      nextBtn = h('button', { type: 'button', class: 'iml-btn iml-btn-primary', onclick: () => { goTo(stepIndex + 1); rootEl.focus({ preventScroll: true }); } }, h('span', { text: 'Dalej' }), icon('right'));
-      stepLabel = h('span', { class: 'iml-steplabel', 'aria-live': 'polite' });
-      footer.append(h('div', { class: 'iml-stepnav', role: 'navigation', 'aria-label': 'Nawigacja lekcji' }, prevBtn, stepLabel, nextBtn));
+    if (paged) {
+      const step = () => (book ? perView : 1);
+      prevBtn = h('button', { type: 'button', class: 'iml-btn iml-btn-ghost', onclick: () => { goTo(stepIndex - step()); rootEl.focus({ preventScroll: true }); } }, icon('left'), book ? 'Poprzednia' : 'Wstecz');
+      nextBtn = h('button', { type: 'button', class: 'iml-btn iml-btn-primary', onclick: () => { goTo(stepIndex + step()); rootEl.focus({ preventScroll: true }); } }, h('span', { text: book ? 'Następna' : 'Dalej' }), icon('right'));
+      if (book) {
+        stepLabel = h('span', { class: 'iml-pagelabel', 'aria-live': 'polite' });
+        zoomLabel = h('span', { class: 'iml-zoomlabel' });
+        viewBtn = h('button', { type: 'button', class: 'iml-btn iml-btn-ghost', title: 'Jedna lub dwie strony', onclick: () => {
+          viewPref = perView === 2 ? 1 : 2;
+          try { root.localStorage.setItem('infomatyka-lesson-book-view', JSON.stringify({ view: viewPref })); } catch (_) {}
+          layoutBook(stepIndex);
+        } }, icon('book'), h('span', { text: '' }));
+        rootEl.append(h('div', { class: 'iml-booknav', role: 'navigation', 'aria-label': 'Nawigacja stron' },
+          prevBtn, stepLabel, nextBtn, h('span', { class: 'iml-vsep' }), viewBtn, h('span', { class: 'iml-vsep' }),
+          h('button', { type: 'button', class: 'iml-btn iml-btn-ghost', title: 'Pomniejsz (Ctrl + kółko myszy)', 'aria-label': 'Pomniejsz', onclick: () => setZoom(userZoom / 1.15) }, '−'),
+          zoomLabel,
+          h('button', { type: 'button', class: 'iml-btn iml-btn-ghost', title: 'Powiększ (Ctrl + kółko myszy)', 'aria-label': 'Powiększ', onclick: () => setZoom(userZoom * 1.15) }, '+'),
+          h('button', { type: 'button', class: 'iml-btn iml-btn-ghost', title: 'Dopasuj do ekranu', onclick: () => setZoom(1) }, 'Dopasuj')));
+        rootEl.addEventListener('wheel', e => { if (!e.ctrlKey && !e.metaKey) return; e.preventDefault(); setZoom(userZoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1)); }, { passive: false });
+        let x0 = null;
+        stage.addEventListener('touchstart', e => { x0 = e.touches.length === 1 && userZoom <= 1 ? e.touches[0].clientX : null; }, { passive: true });
+        stage.addEventListener('touchend', e => { if (x0 == null) return; const dx = e.changedTouches[0].clientX - x0; x0 = null; if (Math.abs(dx) > 60) goTo(stepIndex + (dx < 0 ? perView : -perView), false); });
+        if (root.ResizeObserver) new ResizeObserver(() => { if (rootEl.isConnected) layoutBook(); }).observe(stage);
+      } else {
+        stepLabel = h('span', { class: 'iml-steplabel', 'aria-live': 'polite' });
+        footer.append(h('div', { class: 'iml-stepnav', role: 'navigation', 'aria-label': 'Nawigacja lekcji' }, prevBtn, stepLabel, nextBtn));
+      }
       rootEl.tabIndex = 0;
       rootEl.setAttribute('aria-keyshortcuts', 'Space ArrowDown ArrowRight ArrowUp ArrowLeft');
       rootEl.addEventListener('keydown', event => {
         if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
         const controls = 'input,textarea,select,button,a,[contenteditable],math-field,[role="button"],audio,video,iframe';
         if (event.composedPath().some(node => node.matches && node.matches(controls))) return;
-        const forward = event.key === ' ' || event.key === 'Spacebar' || event.key === 'ArrowDown' || event.key === 'ArrowRight';
-        const backward = event.key === 'ArrowUp' || event.key === 'ArrowLeft';
+        const forward = event.key === 'ArrowRight' || event.key === 'PageDown' || (!book && (event.key === ' ' || event.key === 'Spacebar' || event.key === 'ArrowDown'));
+        const backward = event.key === 'ArrowLeft' || event.key === 'PageUp' || (!book && event.key === 'ArrowUp');
         if (!forward && !backward) return;
         event.preventDefault();
-        if (!event.repeat) goTo(stepIndex + (forward ? 1 : -1));
+        if (!event.repeat) goTo(stepIndex + (forward ? step() : -step()), !book);
       });
     }
     if (finishEl) footer.append(finishEl);
-    if (steps || finishEl) rootEl.append(footer);
-    if (steps) goTo(0, false);
+    if (paged || finishEl) rootEl.append(footer);
+    if (paged) { goTo(0, false); if (book) queueMicrotask(() => layoutBook(0)); }
     // Podpinamy dopiero po wstawieniu lekcji do strony – wtedy znamy kontener przewijania.
     else if (bar) queueMicrotask(trackScroll);
     if (bar) queueMicrotask(keepBarVisible);
+    if (tocLinks.length && !paged) queueMicrotask(trackToc);
 
     // Cała lekcja: pasek pokazuje, jaka część lekcji jest już za dolną krawędzią ekranu (rośnie i maleje płynnie).
     function scrollParent(el) {
@@ -1475,6 +1658,17 @@
         setProgress(done ? 1 : (vp.bottom - r.top) / r.height);
       });
     }
+    function trackToc() {
+      onScrollOrResize(() => {
+        const vp = viewportBox(scrollParent(rootEl));
+        let current = tocHeads[0];
+        tocHeads.forEach(t => {
+          const el = Array.from(rootEl.querySelectorAll('[data-block-id]')).find(x => x.getAttribute('data-block-id') === t.id);
+          if (el && el.getBoundingClientRect().top <= vp.top + 140) current = t;
+        });
+        if (current) markToc(current.id);
+      });
+    }
     // Jeśli przodek ma overflow:hidden/auto (np. motyw bloga), position:sticky nie działa – wtedy przypinamy pasek do ekranu.
     function keepBarVisible() {
       const holder = bar.parentElement;
@@ -1496,7 +1690,14 @@
 
     target.replaceChildren(rootEl);
     typeset(rootEl);
-    return { el: rootEl, lesson, goTo, ctx };
+    return { el: rootEl, lesson, goTo, navigate, ctx };
+  }
+  // Ustawienia (ukryte/zmienione pozycje) z pierwszego elementu „Spis treści” – używane też przez spis z boku.
+  function findTocOverrides(lesson) {
+    let found = null;
+    const walk = list => arr(list).forEach(b => { if (found || !b || !b.props) return; if (b.type === 'toc') { found = b.props.overrides || {}; return; } walk(b.props.blocks); arr(b.props.columns).forEach(c => walk(c && c.blocks)); });
+    arr(lesson.sections).forEach(s => walk(s.blocks));
+    return found || {};
   }
 
   /** Renderuje pojedynczy blok (używane przez edytor do szybkiego odświeżania). */
@@ -1663,7 +1864,7 @@
     render, renderBlock: renderOne, normalize, cleanup, typeset, injectCss,
     sanitizeHtml, sanitizeInline, escapeHtml, htmlToText, safeUrl, hasMath,
     ensureKatex, ensureChart, ensureMathLive, loadScript, loadCss,
-    parseVideo, parseEmbed, parseChartData, parseBlanks, ratioParts, setPath, getPath, uid, icon, countBlocks,
+    parseVideo, parseEmbed, parseChartData, parseBlanks, ratioParts, collectHeadings, setPath, getPath, uid, icon, countBlocks,
     encodeShare, decodeShare, fetchLesson, loadFromLocation, library, mountAll, openLightbox
   });
 })(typeof window !== 'undefined' ? window : this);
