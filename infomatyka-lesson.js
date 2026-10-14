@@ -12,7 +12,7 @@
   'use strict';
   if (root.InfoMatykaLesson && root.InfoMatykaLesson.VERSION) return;
 
-  const VERSION = '1.1.0';
+  const VERSION = '1.2.0';
   const FORMAT = 'infomatyka-lesson';
   const doc = root.document;
   const VIEWER_URL = 'https://www.infomatyka.pl/p/lekcja.html';
@@ -396,7 +396,11 @@
 .iml .iml-tl-date{display:inline-block;padding:2px 9px;margin-bottom:5px;border-radius:999px;background:var(--a-soft);color:var(--a-ink);font-size:12.5px;font-weight:700}
 .iml .iml-tl-title{font-weight:700;font-size:1.05em;color:var(--ink)}
 .iml .iml-tl-text{margin-top:3px;color:#475569;font-size:.96em}
-.iml .iml-gallery{position:relative;border-radius:var(--r);overflow:hidden;background:#0f172a}
+.iml .iml-gallery{position:relative;border-radius:var(--g-r,var(--r));overflow:hidden;background:#0f172a}
+.iml .iml-gallery-bg-light{background:#f1f5f9}.iml .iml-gallery-bg-none{background:transparent}
+.iml .iml-gallery-contain .iml-slide img{object-fit:contain}
+.iml .iml-gallery-bg-light .iml-gnav,.iml .iml-gallery-bg-none .iml-gnav{box-shadow:0 1px 6px #0f172a40}
+.iml .iml-gallery-bg-light .iml-dots button,.iml .iml-gallery-bg-none .iml-dots button{background:#0f172a40}.iml .iml-gallery-bg-light .iml-dots button.iml-on,.iml .iml-gallery-bg-none .iml-dots button.iml-on{background:#0f172a}
 .iml .iml-gallery-track{display:flex;transition:transform .35s ease}
 .iml .iml-slide{flex:0 0 100%;position:relative;height:var(--gh,380px);margin:0}
 .iml .iml-slide img{width:100%;height:100%;object-fit:cover;display:block;margin:0;border:0;padding:0;border-radius:0;cursor:zoom-in}
@@ -470,7 +474,7 @@
 .iml .iml-acc-body{padding:0 16px 16px}
 .iml-edit .iml-acc-sum{cursor:text}
 .iml .iml-ico{display:inline-grid;place-items:center;line-height:0}.iml .iml-ico svg{width:20px;height:20px;display:block}
-.iml .iml-progress{position:sticky;top:0;z-index:20;height:4px;background:#e2e8f0}.iml .iml-progress i{display:block;height:100%;width:0;background:var(--a);transition:width .3s}
+.iml .iml-progress{position:sticky;top:0;z-index:20;height:4px;background:#e2e8f0}.iml .iml-progress.iml-progress-fixed{position:fixed;z-index:2147483000}.iml .iml-progress i{display:block;height:100%;width:0;background:var(--a);transition:width .3s}
 .iml .iml-stepnav{display:flex;align-items:center;gap:12px;max-width:var(--maxw,1100px);margin:0 auto;padding:0 clamp(10px,2.5cqi,24px) 24px}
 .iml .iml-stepnav .iml-steplabel{flex:1;text-align:center;color:var(--muted);font-size:14px;font-weight:600}
 .iml .iml-finish{max-width:var(--maxw,1100px);margin:0 auto;padding:0 clamp(10px,2.5cqi,24px) 32px}
@@ -889,7 +893,9 @@
       track.style.transform = 'translateX(' + (-100 * st.i) + '%)';
       Array.from(dots.children).forEach((d, j) => d.classList.toggle('iml-on', j === st.i));
     }
-    const g = h('div', { class: 'iml-gallery', style: { '--gh': (+b.props.height || 380) + 'px' } }, track);
+    const fit = b.props.fit === 'contain' ? 'contain' : 'cover';
+    const bg = ['dark', 'light', 'none'].indexOf(b.props.bg) >= 0 ? b.props.bg : 'dark';
+    const g = h('div', { class: 'iml-gallery iml-gallery-' + fit + ' iml-gallery-bg-' + bg, style: { '--gh': (+b.props.height || 380) + 'px', '--g-r': b.props.radius != null && b.props.radius !== '' ? b.props.radius + 'px' : null } }, track);
     if (imgs.length > 1) {
       g.append(h('button', { type: 'button', class: 'iml-gnav iml-prev', 'aria-label': 'Poprzednie', 'data-ui': '1', onclick: () => go(st.i - 1) }, icon('chevL')));
       g.append(h('button', { type: 'button', class: 'iml-gnav iml-next', 'aria-label': 'Następne', 'data-ui': '1', onclick: () => go(st.i + 1) }, icon('chevR')));
@@ -1432,13 +1438,60 @@
     if (finishEl) footer.append(finishEl);
     if (steps || finishEl) rootEl.append(footer);
     if (steps) goTo(0, false);
-    else if (bar && 'IntersectionObserver' in root) {
-      let seen = 0;
-      const io = new IntersectionObserver(entries => {
-        entries.forEach(e => { if (e.isIntersecting) seen = Math.max(seen, sections.indexOf(e.target) + 1); });
-        setProgress(seen / sections.length);
-      }, { threshold: 0.35 });
-      sections.forEach(s => io.observe(s));
+    // Podpinamy dopiero po wstawieniu lekcji do strony – wtedy znamy kontener przewijania.
+    else if (bar) queueMicrotask(trackScroll);
+    if (bar) queueMicrotask(keepBarVisible);
+
+    // Cała lekcja: pasek pokazuje, jaka część lekcji jest już za dolną krawędzią ekranu (rośnie i maleje płynnie).
+    function scrollParent(el) {
+      for (let p = el.parentElement; p && p !== doc.body && p !== doc.documentElement; p = p.parentElement) {
+        const oy = getComputedStyle(p).overflowY;
+        if ((oy === 'auto' || oy === 'scroll' || oy === 'overlay') && p.scrollHeight > p.clientHeight + 1) return p;
+      }
+      return root;
+    }
+    function viewportBox(scroller) {
+      if (scroller === root) return { top: 0, bottom: root.innerHeight || doc.documentElement.clientHeight };
+      const r = scroller.getBoundingClientRect();
+      return { top: Math.max(0, r.top), bottom: Math.min(root.innerHeight || r.bottom, r.bottom) };
+    }
+    function onScrollOrResize(fn) {
+      let raf = 0;
+      const run = () => { raf = 0; if (!rootEl.isConnected) { detach(); return; } fn(); };
+      const handler = () => { if (!raf) raf = doc.visibilityState === 'hidden' ? setTimeout(run, 16) : requestAnimationFrame(run); };
+      const targets = new Set([root]);
+      for (let p = rootEl.parentElement; p; p = p.parentElement) targets.add(p);
+      targets.forEach(t => t.addEventListener('scroll', handler, { passive: true }));
+      root.addEventListener('resize', handler);
+      function detach() { targets.forEach(t => t.removeEventListener('scroll', handler)); root.removeEventListener('resize', handler); }
+      handler();
+    }
+    function trackScroll() {
+      onScrollOrResize(() => {
+        const vp = viewportBox(scrollParent(rootEl));
+        const r = docEl.getBoundingClientRect();
+        if (r.height <= 0) return;
+        const done = finishEl && !finishEl.hidden && finishEl.getBoundingClientRect().top < vp.bottom;
+        setProgress(done ? 1 : (vp.bottom - r.top) / r.height);
+      });
+    }
+    // Jeśli przodek ma overflow:hidden/auto (np. motyw bloga), position:sticky nie działa – wtedy przypinamy pasek do ekranu.
+    function keepBarVisible() {
+      const holder = bar.parentElement;
+      onScrollOrResize(() => {
+        holder.classList.remove('iml-progress-fixed');
+        holder.style.left = holder.style.width = holder.style.top = '';
+        const scroller = scrollParent(rootEl);
+        const vp = viewportBox(scroller);
+        const lr = rootEl.getBoundingClientRect();
+        if (lr.top >= vp.top || lr.bottom <= vp.top + 8) return; // lekcja nie jest przewinięta pod górną krawędź
+        const hr = holder.getBoundingClientRect();
+        if (hr.top <= vp.top + 1 && hr.top >= vp.top - 1) return; // sticky działa
+        holder.classList.add('iml-progress-fixed');
+        holder.style.top = vp.top + 'px';
+        holder.style.left = lr.left + 'px';
+        holder.style.width = lr.width + 'px';
+      });
     }
 
     target.replaceChildren(rootEl);
